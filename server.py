@@ -13,6 +13,12 @@ SOURCES={**GRID,**{'b'+id:url for id,(url,_,_) in EXTRA.items()}}
 PROFILES={id:{'name':p[0],'type':p[1],'grid':p[2],'position':p[3],'lead':p[4],'story':p[5],
                   'extra_label':EXTRA[id][2],'source':EXTRA[id][1],'official_info':'https://explore.org/meet-the-bears'} for id,p in BEARS.items()}
 mutex=threading.RLock()
+revision=0
+
+def revise():
+    global revision
+    revision+=1
+
 def new_game(count):return {'players':{},'votes':{},'status':['queued']*15,'cursor':0,'family':{},'coin_toss':{},'started':False,'roster':[],'expected':count,'deadline':None,'transition_at':None}
 def migrate(s,count):
     for k,value in (('players',{}),('votes',{}),('status',['queued']*15),('family',{}),('coin_toss',{})):s.setdefault(k,value)
@@ -51,7 +57,7 @@ def person(handler):
 def launch():
     if not state['started'] and len(state['players'])>=state['expected']:
         state['started']=True;state['roster']=list(state['players']);state['status'][0]='open';state['deadline']=time.time()+VOTE_SECONDS
-        state['transition_at']=None
+        state['transition_at']=None;revise()
 def all_voted(i):return all(pid in state['votes'].get(str(i),{}) for pid in state['roster'])
 def tick():
     if not state['started']:return False
@@ -71,7 +77,8 @@ def tick():
 def timer():
     while True:
         with mutex:
-            if tick():save()
+            if tick():
+                revise();save()
         time.sleep(.5)
 def snapshot(pid):
     games=[]
@@ -100,7 +107,7 @@ def snapshot(pid):
             history.append(item)
         players.append({'name':p['name'],'score':score,'history':history,'voted':user_id in state['votes'].get(str(state['cursor']),{}) if state['started'] else False})
     return {'me':state['players'][pid]['name'] if pid else None,'games':games,'players':players,
-            'cursor':state['cursor'],'expected':state['expected'],'joined':len(state['players']),'roster':len(state['roster']),
+            'cursor':state['cursor'],'phase':str(state['cursor'])+':'+state['status'][state['cursor']],'revision':revision,'expected':state['expected'],'joined':len(state['players']),'roster':len(state['roster']),
             'started':state['started'],'deadline':state['deadline'],'transition_at':state['transition_at'],'now':time.time(),
             'photos_cached':sum((MEDIA/(key+'.jpg')).exists() for key in SOURCES),'photos_total':len(SOURCES)}
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -164,7 +171,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if not 1<=len(name)<=24 or any(ord(c)<32 for c in name):self.fail(400,'Name must be 1–24 characters');return
                 if person(self):self.send(200,{'ok':True});return
                 if state['started'] or len(state['players'])>=state['expected']:self.fail(409,'Room full');return
-                pid=secrets.token_urlsafe(12);token=secrets.token_urlsafe(32);state['players'][pid]={'name':name,'token':token};launch();save()
+                pid=secrets.token_urlsafe(12);token=secrets.token_urlsafe(32);state['players'][pid]={'name':name,'token':token};revise();launch();save()
                 self.send(200,{'ok':True},cookie='bear_player='+token+'; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400');return
             if path=='/api/vote':
                 pid=person(self)
@@ -173,7 +180,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if state['status'][i]!='open':self.fail(409,'Vote closed');return
                 choice=str(data.get('choice',''))
                 if choice not in (a,b):self.fail(400,'Invalid bear');return
-                state['votes'].setdefault(str(i),{})[pid]=choice;tick();save();self.send(200,{'ok':True});return
+                state['votes'].setdefault(str(i),{})[pid]=choice;revise();tick();save();self.send(200,{'ok':True});return
         self.fail(404,'Not found')
 class Server(http.server.ThreadingHTTPServer):daemon_threads=True;allow_reuse_address=True
 if __name__=='__main__':
