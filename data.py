@@ -315,7 +315,11 @@ BEARS_BY_ID: dict[str, dict[str, Any]] = {bear["id"]: bear for bear in BEARS}
 
 def get_bear(bear_id: str) -> dict[str, Any] | None:
     """Return a bear record by stable ID, or None if it is not in this roster."""
-    return BEARS_BY_ID.get(bear_id)
+    if bear_id in BEARS_BY_ID:
+        return BEARS_BY_ID[bear_id]
+    if not bear_id.startswith("b") and f"b{bear_id}" in BEARS_BY_ID:
+        return BEARS_BY_ID[f"b{bear_id}"]
+    return None
 
 
 def media_key_for(bear_id: str, variant: str) -> str | None:
@@ -364,3 +368,39 @@ def public_bear(bear: dict[str, Any]) -> dict[str, Any]:
             },
         },
     }
+
+
+SOURCES: dict[str, str] = {}
+for _b in BEARS:
+    SOURCES[_b["before_key"]] = _b["before_url"]
+    SOURCES[_b["card_key"]] = _b["card_url"]
+
+MATCHES = [
+    ('132', '284', 9426, 1598),
+    ('806', '901', 6365, 6601),
+    ('909', '428', 6367, 6444),
+    ('131', '910', 6579, 6202),
+    ('694', '620', 5760, 3655),
+    ('610', '89', 4851, 8189),
+    ('32', '164', 6204, 5496),
+    ('151', '903', 3092, 7144),
+    ('132', '901', 15689, 9217),
+    ('428', '131', 11813, 8132),
+    ('694', '89', 4180, 13474),
+    ('32', '903', 10123, 7383),
+    ('132', '428', 0, 0),
+    ('89', '32', 0, 0),
+    (None, None, 0, 0),
+]
+
+GRID: dict[str, str] = {}
+EXTRA: dict[str, tuple[str, str, str]] = {}
+for _b in BEARS:
+    EXTRA[_b["id"]] = (
+        _b["card_url"],
+        MEDIA_SOURCES.get(_b["sources"]["card"], {}).get("url", ""),
+        _b["card_caption"],
+    )
+    if _b["id"].startswith("b"):
+        EXTRA[_b["id"][1:]] = EXTRA[_b["id"]]
+

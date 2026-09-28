@@ -3,15 +3,30 @@ import http.server, io, json, os, re, secrets, sys, threading, time, urllib.requ
 from http import cookies
 from pathlib import Path
 from urllib.parse import urlsplit
-from data import BEARS, MATCHES, GRID, EXTRA
+from data import BEARS, MATCHES, SOURCES, public_bear, MEDIA_SOURCES
 BASE=Path(__file__).resolve().parent
 DB=BASE/'game.json';MEDIA=BASE/'media';MEDIA.mkdir(exist_ok=True)
 PORT=int(os.environ.get('PORT','8765'))
 VOTE_SECONDS=int(os.environ.get('VOTE_SECONDS','180'))
 REVEAL_SECONDS=int(os.environ.get('REVEAL_SECONDS','12'))
-SOURCES={**GRID,**{'b'+id:url for id,(url,_,_) in EXTRA.items()}}
-PROFILES={id:{'name':p[0],'type':p[1],'grid':p[2],'position':p[3],'lead':p[4],'story':p[5],
-                  'extra_label':EXTRA[id][2],'source':EXTRA[id][1],'official_info':'https://explore.org/meet-the-bears'} for id,p in BEARS.items()}
+SOURCES=dict(SOURCES)
+PROFILES={}
+for _b in BEARS:
+    _pub=public_bear(_b)
+    _pub['lead']=_b.get('tagline','')
+    _pub['story']=_b.get('fact','')
+    _pub['type']='Contender'
+    _pub['before_key']=_b['before_key']
+    _pub['card_key']=_b['card_key']
+    _pub['official_info']='https://explore.org/meet-the-bears'
+    _pub['source']=MEDIA_SOURCES.get(_b['sources']['card'],{}).get('url','')
+    _pub['extra_label']=_b.get('card_caption','')
+    PROFILES[_b['id']]=_pub
+    if _b['id'].startswith('b'):PROFILES[_b['id'][1:]]=_pub
+for _m in MATCHES:
+    for _bid in _m[:2]:
+        if _bid and _bid not in PROFILES:
+            PROFILES[_bid]={'id':_bid,'name':f'Bear {_bid}','tagline':'A Brooks River contender.','lead':'A Brooks River contender.','fact':'A contender in the Fat Bear tournament.','story':'A contender in the Fat Bear tournament.','type':'Contender','official_info':'https://explore.org/meet-the-bears','source':'https://explore.org/fat-bear-week','extra_label':'Contender','media':{'before':{'key':f'b{_bid}','url':f'/media/b{_bid}','caption':'Contender','source':'Explore.org'},'card':{'key':f'b{_bid}','url':f'/media/b{_bid}','caption':'Contender','source':'Explore.org'}}}
 mutex=threading.RLock()
 revision=0
 
@@ -109,7 +124,7 @@ def snapshot(pid):
     return {'me':state['players'][pid]['name'] if pid else None,'games':games,'players':players,
             'cursor':state['cursor'],'phase':str(state['cursor'])+':'+state['status'][state['cursor']],'revision':revision,'expected':state['expected'],'joined':len(state['players']),'roster':len(state['roster']),
             'started':state['started'],'deadline':state['deadline'],'transition_at':state['transition_at'],'now':time.time(),
-            'photos_cached':sum((MEDIA/(key+'.jpg')).exists() for key in SOURCES),'photos_total':len(SOURCES)}
+            'photos_cached':sum((MEDIA/(key+'.jpg')).exists() or (MEDIA/key).exists() for key in SOURCES),'photos_total':len(SOURCES)}
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version='FatBearClean/4.0'
     def log_message(self,*args):pass
@@ -142,9 +157,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except ImportError:self.fail(503,'Segno missing: run sh setup.sh');return
             return
         if path.startswith('/media/'):
-            key=path[7:-4] if path.endswith('.jpg') else ''
+            key=path[7:-4] if path.endswith('.jpg') else path[7:]
             if key not in SOURCES:self.fail(404,'Unknown photo');return
-            file=MEDIA/(key+'.jpg')
+            file=MEDIA/(key+'.jpg') if (MEDIA/(key+'.jpg')).exists() else (MEDIA/key if (MEDIA/key).exists() else MEDIA/(key+'.jpg'))
             if not file.exists():
                 try:
                     req=urllib.request.Request(SOURCES[key],headers={'User-Agent':'Mozilla/5.0 FatBearFamily/4.0'})
