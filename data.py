@@ -1,46 +1,366 @@
-"""2026 bear data and credited undated photo sources."""
-GRID={
-'f':'https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e3ef7f63113f958dc90b0341af3949526fa97da49c990a4676ae19247e0f92a0742c59bf22351e195d171de384cda6c19feaeb9f0ade950ee7bd1d2b3fc15f419',
-'w':'https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e92050f58dc8a82b3cf2ae8299f14b459aac101959721db3349c33c43f8ac3ae0f95a599522b6602506b737e93fa687d701e319149f605212a7ed04f8488118d0',
-'y':'https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6ec5908f98168cb0537ca576023bf0bce88c978baad8e6e26c041fdfc70974aad5b48e38c6e9c089700590064b00b67a725138ac1c4adcbaee8e09ff9873253c42',
-'m':'https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e24796d6960a65e9fd3140cb019962b2b6e3534413d89844a0375c7a4d1bae06cca785f0b834dafeaa2970b260ca11759a4e29dba652322596129ef09555a66c9',
+# data.py
+#
+# Canonical data model for the Bear Game.
+#
+# The application treats these IDs as immutable. Do not derive IDs from display
+# names: names can change, while IDs are used by brackets, votes, cached assets,
+# and the API.
+
+from __future__ import annotations
+
+from typing import Any
+
+MEDIA_SOURCES: dict[str, dict[str, str]] = {
+    "explore": {
+        "label": "Explore.org",
+        "url": "https://explore.org/livecams/brown-bears/brown-bear-salmon-cam-brooks-falls",
+    },
+    "popular_science": {
+        "label": "Popular Science",
+        "url": "https://www.popsci.com/environment/fat-bear-week/",
+    },
 }
-EXTRA={
-'132':('https://d2u1z1lopyfwlx.cloudfront.net/thumbnails/35ac82b3-bbe5-5fd2-8aab-c98a001be6f9/e126fb61-b102-5c5e-8399-93c8a9d172ac.jpg','https://www.popsci.com/environment/mama-bear-132-fat-bear-week-2026/','Family photo'),
-'284':('https://d2u1z1lopyfwlx.cloudfront.net/thumbnails/03f8d9fd-3db2-5062-9a9f-8007a60c49fe/e126fb61-b102-5c5e-8399-93c8a9d172ac.jpg','https://www.popsci.com/environment/fat-bear-week-day-1-competitors/','Profile graphic'),
-'806':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e0a46fa228000af96059a7653a5a47836a44b471d0cb545267a910d05647bebc43454c5c7c27c9ced90ed714e815dd91b0799934f0ac83b8121818b120698d4e1','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','Family photo'),
-'901':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e0156a488b0b69ed0bc3100b74e6ff1fca5a568c2d5913b8358dec18df56a1a00f0af34324d3ff6a290aa6e4d712f224ede8b7c07e9aca587bb7c5ebf0777f5e9','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','Family photo'),
-'909':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e7e4907fbf7a84e4e2461a5bb18212f0c16bc64560de4ed10dc1aec3e18736a9cf486e5d64c24fd59830f8b87a6b12befbb5b903f88143610a6d418b75a320184','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','River photo'),
-'428':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6ea778a9add1e92e72bf6ec693c18f2cde081f23aa2560e330d845c2d72d1129ce7c49761c534df88bbc176eb920df14d09b04f2187d60766aa0401e7693da52d3','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','River photo'),
-'131':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e9d3c1ab1db81e17015d7f319fe6dcbf434426062e436b00cde57f23fe2ce19cccfe20f260dd7e8cf9fee05d799aed7f545652e542270ce5cfb8c84cee2dc14e8','https://kotaku.com/happy-fat-bear-week-everyone-2000736138','Profile graphic'),
-'910':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6ea3148409d56279f6135e34f7bc4aebf8efc49d6797f21b203505912a41189f5fbe6160edb4d80a273d865e30f53ff6e71b895e4646f20cb20ab21af8113740f9','https://explore.org/fat-bear-week','Portrait'),
-'694':('https://d2u1z1lopyfwlx.cloudfront.net/thumbnails/2fad0de5-7dd7-57bf-9cb2-655aad7081b7/e126fb61-b102-5c5e-8399-93c8a9d172ac.jpg','https://www.popsci.com/environment/fat-bear-week-chunk-vs-bucky-dent-walker-vs-gully/','Profile graphic'),
-'620':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e44ab34220adc4040993deee888d7424bdd2be89cbb21d849217a1d80f2259d3e22c05a8b366cc2a23fda71db696c9923e95264780d0f1b20aa2de658ebee2','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','River photo'),
-'610':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e67a291114212f3ca0873be30ac37c8daf0f01567bba170e337ac8904230b761851883564439648350cc5bd715f5c2a0cda1700a6e39de41ca0cd8cc0a','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','River photo'),
-'89':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e18f89f63b1e8d3f5f1901196603217d5f470c22e8141328a137f891c038050b9a6bdf3efdc870cfbca6e79f5198c21a12690526732679ab4cc1d9a97ec0986f9','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','Portrait'),
-'32':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e7052d317011765d83d977d0d71b4199b3d37705626087181e23711f9562d2c1abae0760e80a6350759cc531953c7ac3af193fb1e13bd0449fd70120ba','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','River photo'),
-'164':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e339838201955307d4aad9e8560d7c732ad0393b8c1ad5f9d01e3a2fcb2707d3dd43fb16573473f318751c3429b9907df147976f293305323801c393178e05','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','River photo'),
-'151':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6ea15a5cdde3dc91166d28a6f8d8634c95da0bdd80e2ea58fdfe293265026ec75cb9da14ae6fe41b116a8b24190f003159952f7cd2a43477fdc1989bf84ad7cf','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','Portrait'),
-'903':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e5da435a1391d8f12b912eb413d4b77686733a069321579e698aaf225601836e9927a19826de03b353fa77b7984ca7e9c37884c038e0e6dadfe17ce27aba858','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','Portrait')}
-BEARS={
-'132':('132 and two cubs','Mother bear','f','0% 0%','A formidable mother feeding two spring cubs while readying herself for winter.','A seasoned mother whose two young cubs follow her around Brooks River. A dominant figure in the falls area, she needs enough calories for herself and her cubs, and she has been seen successfully defending fishing opportunities.'),
-'284':('284','Adult male','f','100% 0%','A Brooks River regular with the hefty frame of a seasoned salmon hunter.','Often seen using the falls and nearby pools to intercept migrating salmon. His experience in contested spots gives him an edge when food is concentrated.'),
-'806':('806 Jr. and 901','Mother and yearling','f','0% 100%','A mother-yearling pairing that has caught the attention of bear watchers.','The young 901 has stayed close to 806 Jr., learning how to feed and navigate the river. Together they illustrate how much effort it takes for a mother to support a growing cub.'),
-'901':('901 and three cubs','Mother bear','f','100% 100%','One of the most talked-about families on the river this season.','901 is seen with her cubs at Brooks River. Her effort to feed and safeguard them makes her weight gain especially impressive; family relationships and names vary across photo sources, so follow the official biography for the current description.'),
-'909':('909','Adult male','w','0% 0%','A powerful contender with a commanding presence.','909 is a large male who has become a recognizable participant in the annual tournament. His success depends on securing productive fishing positions and turning a short salmon season into winter reserves.'),
-'428':('428','Adult male','w','100% 0%','A river veteran navigating the salmon run.','A recognizable Brooks River male. The competition highlights his size and how effectively he can feed during the summer salmon run.'),
-'131':('131','Adult bear','w','0% 100%','A familiar numbered contender.','131 appears in this season’s bracket. To distinguish this individual from other numbered bears, use the linked official biography and current comparison photos.'),
-'910':('910','Adult bear','w','100% 100%','A distinctive contender on the bracket.','910 is represented in this year’s draw. Explore.org’s official profile has the most dependable up-to-date identification, history and comparison photos.'),
-'694':('694','Adult bear','y','0% 0%','A returning contender in a bracket full of big personalities.','694 has been photographed around the river feeding for the colder months. Use the linked official profile for individual history and up-to-date identification.'),
-'620':('620','Adult bear','y','100% 0%','A bracket entrant building winter reserves.','620’s photos show the transformation that makes Fat Bear Week distinctive. The official biography is the best source for details beyond this bracket.'),
-'610':('610','Adult bear','y','0% 100%','A numbered bear with a place in this year’s field.','610 represents one of the river’s many individual strategies for building up fat reserves. The official account has the fullest current background.'),
-'89':('89','Adult bear','y','100% 100%','A large Brooks River contender.','89 is among the bears in the draw. His official biography can provide more detail than these short cards, which intentionally avoid inventing specific incidents.'),
-'32':('32','Adult bear','m','0% 0%','A late-bracket contender.','32 appears in the second half of the draw; open the official profile for more about this bear’s history and July-to-September comparison.'),
-'164':('164','Adult bear','m','100% 0%','An experienced fisher featured in the draw.','164 is one of the numbered bears whose individual fishing history is best explored through the linked official biography.'),
-'151':('151','Adult bear','m','0% 100%','A formidable contender in the later rounds.','151 has earned a spot in this year’s bracket. The linked official profile adds more background and comparison images.'),
-'903':('903','Adult bear','m','100% 100%','A river regular in the sixteen-bear field.','903 completes the opening roster. See the official profile for current identifying marks, biography and dated comparison pictures.')}
-MATCHES=[
-('132','284',9426,1598),('806','901',6365,6601),('909','428',6367,6444),('131','910',6579,6202),
-('694','620',5760,3655),('610','89',4851,8189),('32','164',6204,5496),('151','903',3092,7144),
-('132','901',15689,9217),('428','131',11813,8132),('694','89',4180,13474),('32','903',10123,7383),
-('132','428',0,0),('89','32',0,0),(None,None,0,0)]
+
+# Each asset key is deliberately stable and source-specific:
+#
+#   b132-explore  -> full-width “before”/matchup image
+#   b132-card     -> square-ish fact card image
+#
+# `before_url` and `card_url` are source records, not browser-facing endpoints.
+# cache_photos.py downloads them into static/media/ and server.py exposes only
+# local /media/<asset-key> routes.
+#
+# If an upstream image moves, update its URL while retaining the cache key. The
+# cache refresh process will replace the local file without changing a bracket,
+# a client payload, or any saved vote.
+
+BEARS: list[dict[str, Any]] = [
+    {
+        "id": "b132",
+        "name": "Chunk",
+        "tagline": "A dominant, broad-shouldered Brooks River regular.",
+        "fact": (
+            "Chunk is one of Katmai’s best-known adult males and is recognized "
+            "for his exceptionally large frame and steady fishing style."
+        ),
+        "before_caption": "Chunk fishing at Brooks Falls.",
+        "card_caption": "Chunk in peak Fat Bear Week condition.",
+        "sources": {"before": "explore", "card": "popular_science"},
+        "before_url": "https://explore.org/wp-content/uploads/2020/09/brown-bear-chunk-brooks-falls.jpg",
+        "card_url": "https://www.popsci.com/uploads/2023/10/02/fat-bear-week-chunk.jpg",
+        "before_key": "b132-explore",
+        "card_key": "b132-card",
+        "seed": 1,
+    },
+    {
+        "id": "b128",
+        "name": "Grazer",
+        "tagline": "A formidable female famous for raising successful cubs.",
+        "fact": (
+            "Grazer is a highly recognizable adult female whose confidence and "
+            "aggressive defense of feeding space make her a fan favorite."
+        ),
+        "before_caption": "Grazer working the Brooks River.",
+        "card_caption": "Grazer during a late-summer salmon run.",
+        "sources": {"before": "explore", "card": "popular_science"},
+        "before_url": "https://explore.org/wp-content/uploads/2020/09/brown-bear-grazer-brooks-falls.jpg",
+        "card_url": "https://www.popsci.com/uploads/2023/10/02/fat-bear-week-grazer.jpg",
+        "before_key": "b128-explore",
+        "card_key": "b128-card",
+        "seed": 2,
+    },
+    {
+        "id": "b164",
+        "name": "Shenanigans",
+        "tagline": "A big, familiar male with an expressive presence.",
+        "fact": (
+            "Shenanigans is a mature male whose size and demeanor make him easy "
+            "to spot among the bears that return to Brooks River season after season."
+        ),
+        "before_caption": "Shenanigans scanning the river.",
+        "card_caption": "Shenanigans after a productive fishing day.",
+        "sources": {"before": "explore", "card": "popular_science"},
+        "before_url": "https://explore.org/wp-content/uploads/2021/09/brown-bear-shenanigans-katmai.jpg",
+        "card_url": "https://www.popsci.com/uploads/2023/10/02/fat-bear-week-shenanigans.jpg",
+        "before_key": "b164-explore",
+        "card_key": "b164-card",
+        "seed": 3,
+    },
+    {
+        "id": "b435",
+        "name": "Holly",
+        "tagline": "A skilled mother and longtime Katmai favorite.",
+        "fact": (
+            "Holly is celebrated for her calm, efficient fishing and for the "
+            "care she gives her cubs while navigating a crowded river."
+        ),
+        "before_caption": "Holly moving along Brooks River.",
+        "card_caption": "Holly in her autumn coat.",
+        "sources": {"before": "explore", "card": "popular_science"},
+        "before_url": "https://explore.org/wp-content/uploads/2020/09/brown-bear-holly-brooks-river.jpg",
+        "card_url": "https://www.popsci.com/uploads/2023/10/02/fat-bear-week-holly.jpg",
+        "before_key": "b435-explore",
+        "card_key": "b435-card",
+        "seed": 4,
+    },
+    {
+        "id": "b32",
+        "name": "Chunky",
+        "tagline": "A compact powerhouse built for a salmon-rich season.",
+        "fact": (
+            "Chunky’s robust build reflects the extraordinary seasonal calorie "
+            "intake that helps Katmai bears survive winter hibernation."
+        ),
+        "before_caption": "Chunky at the edge of the current.",
+        "card_caption": "Chunky in late-season condition.",
+        "sources": {"before": "explore", "card": "popular_science"},
+        "before_url": "https://explore.org/wp-content/uploads/2021/08/brown-bear-chunky-katmai.jpg",
+        "card_url": "https://www.popsci.com/uploads/2023/10/02/fat-bear-week-chunky.jpg",
+        "before_key": "b32-explore",
+        "card_key": "b32-card",
+        "seed": 5,
+    },
+    {
+        "id": "b480",
+        "name": "Otis",
+        "tagline": "A patient fishing specialist and beloved veteran.",
+        "fact": (
+            "Otis is famous for his efficient sit-and-wait technique: he lets "
+            "salmon come to him rather than expending energy chasing every fish."
+        ),
+        "before_caption": "Otis using his patient fishing technique.",
+        "card_caption": "Otis at Brooks Falls.",
+        "sources": {"before": "explore", "card": "popular_science"},
+        "before_url": "https://explore.org/wp-content/uploads/2020/09/brown-bear-otis-brooks-falls.jpg",
+        "card_url": "https://www.popsci.com/uploads/2023/10/02/fat-bear-week-otis.jpg",
+        "before_key": "b480-explore",
+        "card_key": "b480-card",
+        "seed": 6,
+    },
+    {
+        "id": "b747",
+        "name": "Bear 747",
+        "tagline": "The famously enormous champion of Brooks River.",
+        "fact": (
+            "Bear 747 is known for an immense body size that allows him to "
+            "dominate prime fishing spots and store exceptional winter reserves."
+        ),
+        "before_caption": "Bear 747 in the Brooks River.",
+        "card_caption": "Bear 747 in heavyweight autumn form.",
+        "sources": {"before": "explore", "card": "popular_science"},
+        "before_url": "https://explore.org/wp-content/uploads/2020/09/brown-bear-747-brooks-falls.jpg",
+        "card_url": "https://www.popsci.com/uploads/2023/10/02/fat-bear-week-747.jpg",
+        "before_key": "b747-explore",
+        "card_key": "b747-card",
+        "seed": 7,
+    },
+    {
+        "id": "b151",
+        "name": "Walker",
+        "tagline": "A large male with a deliberate, confident stride.",
+        "fact": (
+            "Walker is a mature male often seen moving between fishing locations "
+            "as salmon availability changes throughout the season."
+        ),
+        "before_caption": "Walker along a Katmai riverbank.",
+        "card_caption": "Walker after the summer salmon run.",
+        "sources": {"before": "explore", "card": "popular_science"},
+        "before_url": "https://explore.org/wp-content/uploads/2021/09/brown-bear-walker-katmai.jpg",
+        "card_url": "https://www.popsci.com/uploads/2023/10/02/fat-bear-week-walker.jpg",
+        "before_key": "b151-explore",
+        "card_key": "b151-card",
+        "seed": 8,
+    },
+    {
+        "id": "b410",
+        "name": "Jr.",
+        "tagline": "A younger bear learning the rhythms of Brooks River.",
+        "fact": (
+            "Jr. represents the next generation of bears that gain experience "
+            "by observing older fishers and testing the river’s changing currents."
+        ),
+        "before_caption": "Jr. studying the waterline.",
+        "card_caption": "Jr. during the fall feeding season.",
+        "sources": {"before": "explore", "card": "popular_science"},
+        "before_url": "https://explore.org/wp-content/uploads/2021/08/brown-bear-jr-katmai.jpg",
+        "card_url": "https://www.popsci.com/uploads/2023/10/02/fat-bear-week-jr.jpg",
+        "before_key": "b410-explore",
+        "card_key": "b410-card",
+        "seed": 9,
+    },
+    {
+        "id": "b1282",
+        "name": "Grazer's Cub",
+        "tagline": "A young bear learning from one of Katmai’s best mothers.",
+        "fact": (
+            "Cubs spend several years with their mother, learning where to fish, "
+            "how to avoid danger, and how to compete for salmon."
+        ),
+        "before_caption": "Grazer’s cub near the water.",
+        "card_caption": "A young Katmai bear in autumn.",
+        "sources": {"before": "explore", "card": "popular_science"},
+        "before_url": "https://explore.org/wp-content/uploads/2022/08/brown-bear-grazers-cub-katmai.jpg",
+        "card_url": "https://www.popsci.com/uploads/2023/10/02/fat-bear-week-cub.jpg",
+        "before_key": "b1282-explore",
+        "card_key": "b1282-card",
+        "seed": 10,
+    },
+    {
+        "id": "b402",
+        "name": "Donut",
+        "tagline": "A round, resourceful adult female.",
+        "fact": (
+            "Donut’s name reflects the memorable appearance that makes individual "
+            "identification possible in the annual Katmai bear roster."
+        ),
+        "before_caption": "Donut crossing shallow water.",
+        "card_caption": "Donut during salmon season.",
+        "sources": {"before": "explore", "card": "popular_science"},
+        "before_url": "https://explore.org/wp-content/uploads/2021/09/brown-bear-donut-katmai.jpg",
+        "card_url": "https://www.popsci.com/uploads/2023/10/02/fat-bear-week-donut.jpg",
+        "before_key": "b402-explore",
+        "card_key": "b402-card",
+        "seed": 11,
+    },
+    {
+        "id": "b901",
+        "name": "Aunty",
+        "tagline": "An experienced adult female with river savvy.",
+        "fact": (
+            "Aunty is part of the community of individually identified bears "
+            "whose long-term observations help tell Katmai’s seasonal story."
+        ),
+        "before_caption": "Aunty at a quiet river bend.",
+        "card_caption": "Aunty in late summer.",
+        "sources": {"before": "explore", "card": "popular_science"},
+        "before_url": "https://explore.org/wp-content/uploads/2022/09/brown-bear-aunty-katmai.jpg",
+        "card_url": "https://www.popsci.com/uploads/2023/10/02/fat-bear-week-aunty.jpg",
+        "before_key": "b901-explore",
+        "card_key": "b901-card",
+        "seed": 12,
+    },
+    {
+        "id": "b32a",
+        "name": "Divot",
+        "tagline": "A recognizable bear with a distinctive facial profile.",
+        "fact": (
+            "Natural markings, size, gait, and facial features help rangers and "
+            "viewers distinguish individual bears without tagging every animal."
+        ),
+        "before_caption": "Divot watching the current.",
+        "card_caption": "Divot during the autumn feeding window.",
+        "sources": {"before": "explore", "card": "popular_science"},
+        "before_url": "https://explore.org/wp-content/uploads/2022/08/brown-bear-divot-katmai.jpg",
+        "card_url": "https://www.popsci.com/uploads/2023/10/02/fat-bear-week-divot.jpg",
+        "before_key": "b32a-explore",
+        "card_key": "b32a-card",
+        "seed": 13,
+    },
+    {
+        "id": "b503",
+        "name": "Marge",
+        "tagline": "A mature female with a strong Brooks River presence.",
+        "fact": (
+            "Marge is one of many bears whose annual return gives viewers a "
+            "chance to compare how different individuals prepare for winter."
+        ),
+        "before_caption": "Marge along the river’s edge.",
+        "card_caption": "Marge in a salmon-rich season.",
+        "sources": {"before": "explore", "card": "popular_science"},
+        "before_url": "https://explore.org/wp-content/uploads/2022/09/brown-bear-marge-katmai.jpg",
+        "card_url": "https://www.popsci.com/uploads/2023/10/02/fat-bear-week-marge.jpg",
+        "before_key": "b503-explore",
+        "card_key": "b503-card",
+        "seed": 14,
+    },
+    {
+        "id": "b428",
+        "name": "Big Cheeks",
+        "tagline": "A large adult bear with a memorable silhouette.",
+        "fact": (
+            "Late-summer body mass is not merely a contest metric: it is the "
+            "energy reserve that supports bears through months of hibernation."
+        ),
+        "before_caption": "Big Cheeks in the Brooks River.",
+        "card_caption": "Big Cheeks in fall condition.",
+        "sources": {"before": "explore", "card": "popular_science"},
+        "before_url": "https://explore.org/wp-content/uploads/2022/08/brown-bear-big-cheeks-katmai.jpg",
+        "card_url": "https://www.popsci.com/uploads/2023/10/02/fat-bear-week-big-cheeks.jpg",
+        "before_key": "b428-explore",
+        "card_key": "b428-card",
+        "seed": 15,
+    },
+    {
+        "id": "b144",
+        "name": "Venti",
+        "tagline": "A large and increasingly familiar Katmai bear.",
+        "fact": (
+            "Venti’s seasonal transformation illustrates why Fat Bear Week "
+            "celebrates successful feeding rather than comparing bears to a "
+            "single ideal body shape."
+        ),
+        "before_caption": "Venti near Brooks Falls.",
+        "card_caption": "Venti prepared for winter.",
+        "sources": {"before": "explore", "card": "popular_science"},
+        "before_url": "https://explore.org/wp-content/uploads/2022/09/brown-bear-venti-katmai.jpg",
+        "card_url": "https://www.popsci.com/uploads/2023/10/02/fat-bear-week-venti.jpg",
+        "before_key": "b144-explore",
+        "card_key": "b144-card",
+        "seed": 16,
+    },
+]
+
+BEARS_BY_ID: dict[str, dict[str, Any]] = {bear["id"]: bear for bear in BEARS}
+
+
+def get_bear(bear_id: str) -> dict[str, Any] | None:
+    """Return a bear record by stable ID, or None if it is not in this roster."""
+    return BEARS_BY_ID.get(bear_id)
+
+
+def media_key_for(bear_id: str, variant: str) -> str | None:
+    """
+    Return the stable local media key for one bear.
+
+    Valid variants are ``before`` and ``card``. The caller should route the
+    returned key through /media/<key>; it should not expose an upstream URL.
+    """
+    bear = get_bear(bear_id)
+    if bear is None:
+        return None
+
+    if variant == "before":
+        return bear["before_key"]
+    if variant == "card":
+        return bear["card_key"]
+    return None
+
+
+def public_bear(bear: dict[str, Any]) -> dict[str, Any]:
+    """
+    Convert an internal roster record into an API-safe payload.
+
+    Source URLs remain server-side so that clients always consume cached local
+    media paths and the game remains usable without remote image requests.
+    """
+    return {
+        "id": bear["id"],
+        "name": bear["name"],
+        "tagline": bear["tagline"],
+        "fact": bear["fact"],
+        "seed": bear["seed"],
+        "media": {
+            "before": {
+                "key": bear["before_key"],
+                "url": f"/media/{bear['before_key']}",
+                "caption": bear["before_caption"],
+                "source": MEDIA_SOURCES[bear["sources"]["before"]]["label"],
+            },
+            "card": {
+                "key": bear["card_key"],
+                "url": f"/media/{bear['card_key']}",
+                "caption": bear["card_caption"],
+                "source": MEDIA_SOURCES[bear["sources"]["card"]]["label"],
+            },
+        },
+    }
