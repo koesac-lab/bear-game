@@ -1,0 +1,476 @@
+# Repository: koesac-lab/bear-game
+# Base commit: 7755a88c22550657f8e8b1cda5a8cab5ddfc67bc
+# Commit subject: Prioritize iPad matchup and compact phone ballot
+# Generated: 2026-09-28T13:31:58+01:00
+
+
+
+================================================================================
+FILE: server.py
+================================================================================
+
+     1	#!/usr/bin/env python3
+     2	import http.server, io, json, os, re, secrets, sys, threading, time, urllib.request
+     3	from http import cookies
+     4	from pathlib import Path
+     5	from urllib.parse import urlsplit
+     6	from data import BEARS, MATCHES, GRID, EXTRA
+     7	BASE=Path(__file__).resolve().parent
+     8	DB=BASE/'game.json';MEDIA=BASE/'media';MEDIA.mkdir(exist_ok=True)
+     9	PORT=int(os.environ.get('PORT','8765'))
+    10	VOTE_SECONDS=int(os.environ.get('VOTE_SECONDS','180'))
+    11	REVEAL_SECONDS=int(os.environ.get('REVEAL_SECONDS','12'))
+    12	SOURCES={**GRID,**{'b'+id:url for id,(url,_,_) in EXTRA.items()}}
+    13	PROFILES={id:{'name':p[0],'type':p[1],'grid':p[2],'position':p[3],'lead':p[4],'story':p[5],
+    14	                  'extra_label':EXTRA[id][2],'source':EXTRA[id][1],'official_info':'https://explore.org/meet-the-bears'} for id,p in BEARS.items()}
+    15	mutex=threading.RLock()
+    16	def new_game(count):return {'players':{},'votes':{},'status':['queued']*15,'cursor':0,'family':{},'coin_toss':{},'started':False,'roster':[],'expected':count,'deadline':None,'transition_at':None}
+    17	def migrate(s,count):
+    18	    for k,value in (('players',{}),('votes',{}),('status',['queued']*15),('family',{}),('coin_toss',{})):s.setdefault(k,value)
+    19	    s.setdefault('expected',count)
+    20	    progress=s.get('cursor',0)>0 or any(s['votes'].values()) or any(x in ('locked','revealed') for x in s['status'])
+    21	    s.setdefault('started',progress);s.setdefault('roster',list(s['players']) if progress else [])
+    22	    phase=s['status'][s['cursor']]
+    23	    s.setdefault('deadline',time.time()+VOTE_SECONDS if s['started'] and phase=='open' else None)
+    24	    s.setdefault('transition_at',time.time()+(3 if phase=='locked' else REVEAL_SECONDS) if s['started'] and phase in ('locked','revealed') else None)
+    25	    if not s['started']:s['status'][0]='queued'
+    26	    return s
+    27	try:
+    28	    count=int(sys.argv[1]) if len(sys.argv)>1 else 2
+    29	    assert 2<=count<=30
+    30	except (ValueError,AssertionError):sys.exit('Usage: python3 server.py [2-30 players]')
+    31	state=migrate(json.loads(DB.read_text()),count) if DB.exists() else new_game(count)
+    32	def save():
+    33	    tmp=DB.with_suffix('.tmp');tmp.write_text(json.dumps(state,separators=(',',':')));os.replace(tmp,DB)
+    34	save()
+    35	def pair(i):return (state['family'].get('12'),state['family'].get('13')) if i==14 else MATCHES[i][:2]
+    36	def official(i):return MATCHES[i][0] if MATCHES[i][2]>MATCHES[i][3] else MATCHES[i][1]
+    37	def visible(i):
+    38	    if i<8:return True
+    39	    if i<12:return all(x=='revealed' for x in state['status'][:8])
+    40	    if i<14:return all(x=='revealed' for x in state['status'][:12])
+    41	    return state['status'][12]==state['status'][13]=='revealed'
+    42	def person(handler):
+    43	    cookie=cookies.SimpleCookie()
+    44	    try:cookie.load(handler.headers.get('Cookie',''))
+    45	    except cookies.CookieError:return None
+    46	    token=cookie.get('bear_player')
+    47	    if not token:return None
+    48	    for pid,p in state['players'].items():
+    49	        if secrets.compare_digest(token.value,p['token']):return pid
+    50	    return None
+    51	def launch():
+    52	    if not state['started'] and len(state['players'])>=state['expected']:
+    53	        state['started']=True;state['roster']=list(state['players']);state['status'][0]='open';state['deadline']=time.time()+VOTE_SECONDS
+    54	        state['transition_at']=None
+    55	def all_voted(i):return all(pid in state['votes'].get(str(i),{}) for pid in state['roster'])
+    56	def tick():
+    57	    if not state['started']:return False
+    58	    i=state['cursor'];phase=state['status'][i];now=time.time()
+    59	    if phase=='open' and (all_voted(i) or now>=state['deadline']):
+    60	        state['status'][i]='locked';state['deadline']=None;state['transition_at']=now+3;return True
+    61	    if phase=='locked' and state['transition_at'] is not None and now>=state['transition_at']:
+    62	        if i>=12:
+    63	            a,b=pair(i);votes=list(state['votes'].get(str(i),{}).values());av=votes.count(a);bv=votes.count(b)
+    64	            if av==bv:state['family'][str(i)]=secrets.choice([a,b]);state['coin_toss'][str(i)]=True
+    65	            else:state['family'][str(i)]=a if av>bv else b
+    66	        state['status'][i]='revealed';state['transition_at']=now+REVEAL_SECONDS;return True
+    67	    if phase=='revealed' and state['transition_at'] is not None and now>=state['transition_at']:
+    68	        if i==14:state['transition_at']=None;return True
+    69	        state['cursor']=i+1;state['status'][i+1]='open';state['deadline']=now+VOTE_SECONDS;state['transition_at']=None;return True
+    70	    return False
+    71	def timer():
+    72	    while True:
+    73	        with mutex:
+    74	            if tick():save()
+    75	        time.sleep(.5)
+    76	def snapshot(pid):
+    77	    games=[]
+    78	    for i in range(15):
+    79	        a,b=pair(i);show=visible(i);phase=state['status'][i]
+    80	        g={'id':i,'round':0 if i<8 else 1 if i<12 else 2 if i<14 else 3,'a':a if show else None,'b':b if show else None,'status':phase if show else 'hidden','voted':len(state['votes'].get(str(i),{})) if show else 0}
+    81	        if show and pid:g['my_pick']=state['votes'].get(str(i),{}).get(pid)
+    82	        if show and phase=='revealed':
+    83	            g['winner']=official(i) if i<12 else state['family'].get(str(i))
+    84	            g['official']=i<12;g['totals']=MATCHES[i][2:] if i<12 else None;g['coin_toss']=bool(state['coin_toss'].get(str(i)))
+    85	            tally={a:0,b:0}
+    86	            for v in state['votes'].get(str(i),{}).values():
+    87	                if v in tally:tally[v]+=1
+    88	            g['family_votes']=tally
+    89	        games.append(g)
+    90	    players=[]
+    91	    for user_id,p in sorted(state['players'].items(),key=lambda x:x[1]['name'].casefold()):
+    92	        score=0;history=[]
+    93	        for i,g in enumerate(games):
+    94	            choice=state['votes'].get(str(i),{}).get(user_id)
+    95	            if g['status']=='revealed':
+    96	                if i<12:
+    97	                    item='correct' if choice==g['winner'] else 'wrong' if choice else 'missed';score+=item=='correct'
+    98	                else:item='prediction' if choice else 'missed'
+    99	            else:item='pending' if choice and user_id==pid else 'none'
+   100	            history.append(item)
+   101	        players.append({'name':p['name'],'score':score,'history':history,'voted':user_id in state['votes'].get(str(state['cursor']),{}) if state['started'] else False})
+   102	    return {'me':state['players'][pid]['name'] if pid else None,'games':games,'players':players,
+   103	            'cursor':state['cursor'],'expected':state['expected'],'joined':len(state['players']),'roster':len(state['roster']),
+   104	            'started':state['started'],'deadline':state['deadline'],'transition_at':state['transition_at'],'now':time.time(),
+   105	            'photos_cached':sum((MEDIA/(key+'.jpg')).exists() for key in SOURCES),'photos_total':len(SOURCES)}
+   106	class Handler(http.server.BaseHTTPRequestHandler):
+   107	    server_version='FatBearClean/4.0'
+   108	    def log_message(self,*args):pass
+   109	    def send(self,status,body,kind='application/json; charset=utf-8',cookie=None,cache='no-store'):
+   110	        data=body if isinstance(body,bytes) else json.dumps(body,separators=(',',':')).encode()
+   111	        try:
+   112	            self.send_response(status);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(data)))
+   113	            self.send_header('Cache-Control',cache);self.send_header('X-Content-Type-Options','nosniff')
+   114	            if cookie:self.send_header('Set-Cookie',cookie)
+   115	            self.end_headers();self.wfile.write(data)
+   116	        except (BrokenPipeError,ConnectionResetError,ConnectionAbortedError,OSError):pass
+   117	    def fail(self,code,message):self.send(code,{'error':message})
+   118	    def do_GET(self):
+   119	        path=urlsplit(self.path).path
+   120	        pages={'/':'index.html','/display':'display.html','/host':'display.html','/photos':'photos.html'}
+   121	        if path in pages:self.send(200,(BASE/pages[path]).read_bytes(),'text/html; charset=utf-8');return
+   122	        if path=='/style.css':self.send(200,(BASE/'style.css').read_bytes(),'text/css; charset=utf-8');return
+   123	        if path=='/api/profiles':self.send(200,PROFILES,cache='private, max-age=3600');return
+   124	        if path=='/api/state':
+   125	            with mutex:body=snapshot(person(self))
+   126	            self.send(200,body);return
+   127	        if path=='/join-qr.svg':
+   128	            host=self.headers.get('Host','')
+   129	            if not re.fullmatch(r'[A-Za-z0-9.:-]{1,253}',host):self.fail(400,'Invalid Host');return
+   130	            if host.split(':')[0] in ('localhost','127.0.0.1'):self.fail(400,'Open via iPhone Wi-Fi IP');return
+   131	            try:
+   132	                import segno
+   133	                output=io.BytesIO();segno.make_qr('http://'+host+'/').save(output,kind='svg',scale=8)
+   134	                self.send(200,output.getvalue(),'image/svg+xml')
+   135	            except ImportError:self.fail(503,'Segno missing: run sh setup.sh');return
+   136	            return
+   137	        if path.startswith('/media/'):
+   138	            key=path[7:-4] if path.endswith('.jpg') else ''
+   139	            if key not in SOURCES:self.fail(404,'Unknown photo');return
+   140	            file=MEDIA/(key+'.jpg')
+   141	            if not file.exists():
+   142	                try:
+   143	                    req=urllib.request.Request(SOURCES[key],headers={'User-Agent':'Mozilla/5.0 FatBearFamily/4.0'})
+   144	                    with urllib.request.urlopen(req,timeout=10) as resp:
+   145	                        if not resp.headers.get('Content-Type','').lower().startswith('image/'):raise ValueError('not image')
+   146	                        data=resp.read(9000001)
+   147	                    if not 1000<len(data)<9000000:raise ValueError('bad image size')
+   148	                    file.write_bytes(data)
+   149	                except Exception:self.fail(404,'Source photo unavailable');return
+   150	            data=file.read_bytes();mime='image/png' if data.startswith(b'\x89PNG') else 'image/webp' if data.startswith(b'RIFF') else 'image/avif' if b'ftypavif' in data[:32] else 'image/jpeg'
+   151	            self.send(200,data,mime,cache='private, max-age=86400');return
+   152	        self.fail(404,'Not found')
+   153	    def do_POST(self):
+   154	        path=urlsplit(self.path).path
+   155	        if path not in ('/api/join','/api/vote'):self.fail(404,'Not found');return
+   156	        try:
+   157	            n=int(self.headers.get('Content-Length','0'))
+   158	            if n<1 or n>4096:raise ValueError()
+   159	            data=json.loads(self.rfile.read(n))
+   160	        except (ValueError,TypeError,json.JSONDecodeError):self.fail(400,'Invalid request');return
+   161	        with mutex:
+   162	            if path=='/api/join':
+   163	                name=str(data.get('name','')).strip()
+   164	                if not 1<=len(name)<=24 or any(ord(c)<32 for c in name):self.fail(400,'Name must be 1–24 characters');return
+   165	                if person(self):self.send(200,{'ok':True});return
+   166	                if state['started'] or len(state['players'])>=state['expected']:self.fail(409,'Room full');return
+   167	                pid=secrets.token_urlsafe(12);token=secrets.token_urlsafe(32);state['players'][pid]={'name':name,'token':token};launch();save()
+   168	                self.send(200,{'ok':True},cookie='bear_player='+token+'; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400');return
+   169	            if path=='/api/vote':
+   170	                pid=person(self)
+   171	                if not pid or pid not in state['roster']:self.fail(401,'Join before the game starts');return
+   172	                i=state['cursor'];a,b=pair(i)
+   173	                if state['status'][i]!='open':self.fail(409,'Vote closed');return
+   174	                choice=str(data.get('choice',''))
+   175	                if choice not in (a,b):self.fail(400,'Invalid bear');return
+   176	                state['votes'].setdefault(str(i),{})[pid]=choice;tick();save();self.send(200,{'ok':True});return
+   177	        self.fail(404,'Not found')
+   178	class Server(http.server.ThreadingHTTPServer):daemon_threads=True;allow_reuse_address=True
+   179	if __name__=='__main__':
+   180	    try:import segno
+   181	    except ImportError:print('WARNING: QR is unavailable. Run: sh setup.sh',flush=True)
+   182	    threading.Thread(target=timer,daemon=True).start()
+   183	    print('Bear game '+('resuming' if state['started'] else 'waiting for %s players'%state['expected']),flush=True)
+   184	    print('Guests: http://:%s/'%PORT,flush=True)
+   185	    print('Display: http://:%s/display'%PORT,flush=True)
+   186	    Server(('0.0.0.0',PORT),Handler).serve_forever()
+
+
+================================================================================
+FILE: data.py
+================================================================================
+
+     1	"""2026 bear data and credited undated photo sources."""
+     2	GRID={
+     3	'f':'https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e3ef7f63113f958dc90b0341af3949526fa97da49c990a4676ae19247e0f92a0742c59bf22351e195d171de384cda6c19feaeb9f0ade950ee7bd1d2b3fc15f419',
+     4	'w':'https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e92050f58dc8a82b3cf2ae8299f14b459aac101959721db3349c33c43f8ac3ae0f95a599522b6602506b737e93fa687d701e319149f605212a7ed04f8488118d0',
+     5	'y':'https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6ec5908f98168cb0537ca576023bf0bce88c978baad8e6e26c041fdfc70974aad5b48e38c6e9c089700590064b00b67a725138ac1c4adcbaee8e09ff9873253c42',
+     6	'm':'https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e24796d6960a65e9fd3140cb019962b2b6e3534413d89844a0375c7a4d1bae06cca785f0b834dafeaa2970b260ca11759a4e29dba652322596129ef09555a66c9',
+     7	}
+     8	EXTRA={
+     9	'132':('https://d2u1z1lopyfwlx.cloudfront.net/thumbnails/35ac82b3-bbe5-5fd2-8aab-c98a001be6f9/e126fb61-b102-5c5e-8399-93c8a9d172ac.jpg','https://www.popsci.com/environment/mama-bear-132-fat-bear-week-2026/','Family photo'),
+    10	'284':('https://d2u1z1lopyfwlx.cloudfront.net/thumbnails/03f8d9fd-3db2-5062-9a9f-8007a60c49fe/e126fb61-b102-5c5e-8399-93c8a9d172ac.jpg','https://www.popsci.com/environment/fat-bear-week-day-1-competitors/','Profile graphic'),
+    11	'806':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e0a46fa228000af96059a7653a5a47836a44b471d0cb545267a910d05647bebc43454c5c7c27c9ced90ed714e815dd91b0799934f0ac83b8121818b120698d4e1','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','Family photo'),
+    12	'901':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e0156a488b0b69ed0bc3100b74e6ff1fca5a568c2d5913b8358dec18df56a1a00f0af34324d3ff6a290aa6e4d712f224ede8b7c07e9aca587bb7c5ebf0777f5e9','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','Family photo'),
+    13	'909':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e7e4907fbf7a84e4e2461a5bb18212f0c16bc64560de4ed10dc1aec3e18736a9cf486e5d64c24fd59830f8b87a6b12befbb5b903f88143610a6d418b75a320184','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','River photo'),
+    14	'428':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6ea778a9add1e92e72bf6ec693c18f2cde081f23aa2560e330d845c2d72d1129ce7c49761c534df88bbc176eb920df14d09b04f2187d60766aa0401e7693da52d3','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','River photo'),
+    15	'131':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e9d3c1ab1db81e17015d7f319fe6dcbf434426062e436b00cde57f23fe2ce19cccfe20f260dd7e8cf9fee05d799aed7f545652e542270ce5cfb8c84cee2dc14e8','https://kotaku.com/happy-fat-bear-week-everyone-2000736138','Profile graphic'),
+    16	'910':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6ea3148409d56279f6135e34f7bc4aebf8efc49d6797f21b203505912a41189f5fbe6160edb4d80a273d865e30f53ff6e71b895e4646f20cb20ab21af8113740f9','https://explore.org/fat-bear-week','Portrait'),
+    17	'694':('https://d2u1z1lopyfwlx.cloudfront.net/thumbnails/2fad0de5-7dd7-57bf-9cb2-655aad7081b7/e126fb61-b102-5c5e-8399-93c8a9d172ac.jpg','https://www.popsci.com/environment/fat-bear-week-chunk-vs-bucky-dent-walker-vs-gully/','Profile graphic'),
+    18	'620':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e44ab34220adc4040993deee888d7424bdd2be89cbb21d849217a1d80f2259d3e22c05a8b366cc2a23fda71db696c9923e95264780d0f1b20aa2de658ebee2','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','River photo'),
+    19	'610':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e67a291114212f3ca0873be30ac37c8daf0f01567bba170e337ac8904230b761851883564439648350cc5bd715f5c2a0cda1700a6e39de41ca0cd8cc0a','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','River photo'),
+    20	'89':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e18f89f63b1e8d3f5f1901196603217d5f470c22e8141328a137f891c038050b9a6bdf3efdc870cfbca6e79f5198c21a12690526732679ab4cc1d9a97ec0986f9','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','Portrait'),
+    21	'32':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e7052d317011765d83d977d0d71b4199b3d37705626087181e23711f9562d2c1abae0760e80a6350759cc531953c7ac3af193fb1e13bd0449fd70120ba','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','River photo'),
+    22	'164':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e339838201955307d4aad9e8560d7c732ad0393b8c1ad5f9d01e3a2fcb2707d3dd43fb16573473f318751c3429b9907df147976f293305323801c393178e05','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','River photo'),
+    23	'151':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6ea15a5cdde3dc91166d28a6f8d8634c95da0bdd80e2ea58fdfe293265026ec75cb9da14ae6fe41b116a8b24190f003159952f7cd2a43477fdc1989bf84ad7cf','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','Portrait'),
+    24	'903':('https://st.perplexity.ai/estatic/0b226c450798410ac541646c86ec31afd840e5beab817a5d84fa821e7db61981ec84c3b4a3f072a7a2e1899c9fb06c6e5da435a1391d8f12b912eb413d4b77686733a069321579e698aaf225601836e9927a19826de03b353fa77b7984ca7e9c37884c038e0e6dadfe17ce27aba858','https://www.usatoday.com/picture-gallery/pets-animals/wildlife/2026/09/18/see-fat-bear-week-2026-contenders-photos/91831330007/','Portrait')}
+    25	BEARS={
+    26	'132':('132 and two cubs','Mother bear','f','0% 0%','A formidable mother feeding two spring cubs while readying herself for winter.','A seasoned mother whose two young cubs follow her around Brooks River. A dominant figure in the falls area, she needs enough calories for herself and her cubs, and she has been seen successfully defending fishing opportunities.'),
+    27	'284':('284','Adult male','f','100% 0%','A Brooks River regular with the hefty frame of a seasoned salmon hunter.','Often seen using the falls and nearby pools to intercept migrating salmon. His experience in contested spots gives him an edge when food is concentrated.'),
+    28	'806':('806 Jr. and 901','Mother and yearling','f','0% 100%','A mother-yearling pairing that has caught the attention of bear watchers.','The young 901 has stayed close to 806 Jr., learning how to feed and navigate the river. Together they illustrate how much effort it takes for a mother to support a growing cub.'),
+    29	'901':('901 and three cubs','Mother bear','f','100% 100%','One of the most talked-about families on the river this season.','901 is seen with her cubs at Brooks River. Her effort to feed and safeguard them makes her weight gain especially impressive; family relationships and names vary across photo sources, so follow the official biography for the current description.'),
+    30	'909':('909','Adult male','w','0% 0%','A powerful contender with a commanding presence.','909 is a large male who has become a recognizable participant in the annual tournament. His success depends on securing productive fishing positions and turning a short salmon season into winter reserves.'),
+    31	'428':('428','Adult male','w','100% 0%','A river veteran navigating the salmon run.','A recognizable Brooks River male. The competition highlights his size and how effectively he can feed during the summer salmon run.'),
+    32	'131':('131','Adult bear','w','0% 100%','A familiar numbered contender.','131 appears in this season’s bracket. To distinguish this individual from other numbered bears, use the linked official biography and current comparison photos.'),
+    33	'910':('910','Adult bear','w','100% 100%','A distinctive contender on the bracket.','910 is represented in this year’s draw. Explore.org’s official profile has the most dependable up-to-date identification, history and comparison photos.'),
+    34	'694':('694','Adult bear','y','0% 0%','A returning contender in a bracket full of big personalities.','694 has been photographed around the river feeding for the colder months. Use the linked official profile for individual history and up-to-date identification.'),
+    35	'620':('620','Adult bear','y','100% 0%','A bracket entrant building winter reserves.','620’s photos show the transformation that makes Fat Bear Week distinctive. The official biography is the best source for details beyond this bracket.'),
+    36	'610':('610','Adult bear','y','0% 100%','A numbered bear with a place in this year’s field.','610 represents one of the river’s many individual strategies for building up fat reserves. The official account has the fullest current background.'),
+    37	'89':('89','Adult bear','y','100% 100%','A large Brooks River contender.','89 is among the bears in the draw. His official biography can provide more detail than these short cards, which intentionally avoid inventing specific incidents.'),
+    38	'32':('32','Adult bear','m','0% 0%','A late-bracket contender.','32 appears in the second half of the draw; open the official profile for more about this bear’s history and July-to-September comparison.'),
+    39	'164':('164','Adult bear','m','100% 0%','An experienced fisher featured in the draw.','164 is one of the numbered bears whose individual fishing history is best explored through the linked official biography.'),
+    40	'151':('151','Adult bear','m','0% 100%','A formidable contender in the later rounds.','151 has earned a spot in this year’s bracket. The linked official profile adds more background and comparison images.'),
+    41	'903':('903','Adult bear','m','100% 100%','A river regular in the sixteen-bear field.','903 completes the opening roster. See the official profile for current identifying marks, biography and dated comparison pictures.')}
+    42	MATCHES=[
+    43	('132','284',9426,1598),('806','901',6365,6601),('909','428',6367,6444),('131','910',6579,6202),
+    44	('694','620',5760,3655),('610','89',4851,8189),('32','164',6204,5496),('151','903',3092,7144),
+    45	('132','901',15689,9217),('428','131',11813,8132),('694','89',4180,13474),('32','903',10123,7383),
+    46	('132','428',0,0),('89','32',0,0),(None,None,0,0)]
+
+
+================================================================================
+FILE: display.html
+================================================================================
+
+     1	<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0e2031"><link rel="stylesheet" href="/style.css"><title>Fat Bear · communal screen</title><style>.share{display:flex;gap:12px;align-items:center}.share img{width:145px;height:145px;background:#fff;border:7px solid white;border-radius:9px;flex:none}.share img[hidden]{display:none}.share input{background:#153447;color:var(--text);border:1px solid #809daa;border-radius:8px;padding:7px;width:100%;max-width:270px}.share a{display:block;font-size:.84rem;font-weight:900;word-break:break-all}.share label{font-size:.8rem;color:var(--muted)}.share small{color:var(--gold);font-size:.75rem}.share small:not(:empty){display:block;padding:7px;background:#60422d;border-radius:7px}.header{display:flex;justify-content:space-between;align-items:center;gap:13px;padding:10px 0}.intro{display:flex;align-items:end;justify-content:space-between;gap:12px}.intro h1{font-size:clamp(2.4rem,4.5vw,4.7rem);letter-spacing:-.08em;line-height:.9;margin:18px 0}.intro h1 em{font-style:normal;color:var(--lime)}.layout{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(280px,.82fr);gap:12px}.screen-bear .bear-body p{font-size:clamp(.77rem,1.05vw,1rem)}.screen-bear .photo{aspect-ratio:1.52}.roster{margin-top:12px}.lobby{text-align:center;padding:35px 15px}.lobby h2{font-size:clamp(3rem,6vw,6rem)}@media(max-width:880px){.layout{grid-template-columns:1fr}}@media(max-width:590px){.header{display:block}.share{margin:10px 0}.share img{width:110px;height:110px}.intro{display:block}}</style></head><body><header class="top wrap header"><span class="logo">FAT BEAR / SHARED SCREEN</span><a class="btn" href="/photos">View all 16 photos ↗</a><div class="share"><div><div class="status">Join this game</div><label for="wifi">Wi-Fi name (enter once):</label><input id="wifi" maxlength="64" placeholder="House Wi-Fi name" autocomplete="off"><a id="link" href="/">Loading URL…</a><small id="qr-error" role="status" aria-live="polite"></small></div><img id="qr" alt="Scan to join this game"></div></header><main class="wrap"><div class="intro"><h1>Our <em>fat bear</em> bracket.</h1><div class="status" id="clock" role="status" aria-live="polite">Connecting…</div></div><section class="panel lobby" id="lobby" hidden></section><div id="game" hidden><div class="layout"><section class="panel" id="current"></section><aside class="panel"><div class="status">Family leaderboard</div><h2>Who’s winning?</h2><div id="scores"></div><h2>Who’s voted?</h2><div id="roster" class="people roster"></div></aside></div><section class="panel"><h2>Overall bracket</h2><div id="bracket" class="bracket"></div></section><p class="small muted" id="photo-count"></p></div></main><script>
+     2	(()=>{'use strict';const $=id=>document.getElementById(id),esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));let s=null,profiles=null,signature='',matchKey='',alternate=false,busy=false,failures=0,qrReady=false,qrFailed=false,serverOffset=0;const wifi=$('wifi');wifi.value=localStorage.getItem('fatbear-wifi-name')||'';wifi.addEventListener('input',()=>localStorage.setItem('fatbear-wifi-name',wifi.value.trim()));$('link').href=location.origin+'/';$('link').textContent=location.origin+'/';$('qr').addEventListener('load',()=>{qrReady=true;readiness()});$('qr').addEventListener('error',()=>{qrFailed=true;$('qr').hidden=true;$('qr-error').textContent='QR unavailable: run sh setup.sh and check /join-qr.svg.';readiness()});if(['localhost','127.0.0.1'].includes(location.hostname)){$('qr').hidden=true;qrFailed=true;$('qr-error').textContent='Open /display using the iPhone Wi-Fi IP, not localhost.'}else $('qr').src=location.origin+'/join-qr.svg';document.addEventListener('error',e=>{const img=e.target;if(!(img instanceof HTMLImageElement)||img.id==='qr')return;if(img.dataset.kind==='extra'){img.dataset.kind='grid';img.classList.add('grid-photo');img.src='/media/'+img.dataset.grid+'.jpg'}else img.classList.add('failed')},true);function image(id){const p=profiles[id],grid=alternate?!p.extra_label.includes('graphic'):p.extra_label.includes('graphic');return `<div class="photo"><img src="/media/${grid?p.grid:'b'+id}.jpg" data-kind="${grid?'grid':'extra'}" data-grid="${p.grid}" class="${grid?'grid-photo':''}" style="--origin:${p.position}" alt="${esc(p.name)} photo"><span class="fallback">#${esc(id)}</span></div>`}function card(id){const p=profiles[id];return `<article data-card-id="${id}" class="bear screen-bear">${image(id)}<div class="bear-body"><h3>${esc(p.name)}</h3><p>${esc(p.lead)}</p><div class="status image-label">${alternate?'Alternate image':'2026 contender'}</div></div></article>`}function clock(){if(!s||!s.started)return 'Lobby';const g=s.games[s.cursor],t=s.deadline||s.transition_at,n=t?Math.max(0,Math.ceil(t-Date.now()/1000-serverOffset)):0;return g.status==='open'?`${g.voted}/${s.roster} voted · ${n}s left`:g.status==='locked'?`Reveal in ${n}s`:g.status==='revealed'?g.id===14?'Tournament complete':`Next match in ${n}s`:'Waiting'}function readiness(){const el=$('readiness');if(!el||!s)return;el.textContent=`${qrReady?'Join QR ready':qrFailed?'Join QR unavailable; use the URL':'Checking join QR…'} · Photos: ${s.photos_cached}/${s.photos_total} cached${s.photos_cached<s.photos_total?' — some may be missing':''}. Open View all 16 photos to inspect them.`}function result(g){if(g.status!=='revealed')return '<div class="result pred">Picks stay private until reveal.</div>';const name=esc(profiles[g.winner].name);return g.official?`<div class="result"><strong>Official winner: ${name}</strong><small>Official votes ${g.totals[0].toLocaleString()} vs ${g.totals[1].toLocaleString()} · family ${g.family_votes[g.a]} vs ${g.family_votes[g.b]}</small></div>`:`<div class="result pred"><strong>Family prediction: ${name}</strong><small>${g.coin_toss?'Tied family vote settled by coin toss.':'Family majority advances.'} Official result not yet known.</small></div>`}function standings(){const icons={correct:'✓',wrong:'✕',missed:'○',prediction:'◇'},sorted=[...s.players].sort((a,b)=>b.score-a.score||a.name.localeCompare(b.name));$('scores').innerHTML=`<table class="score"><thead><tr><th>Player</th><th>Points</th></tr></thead><tbody>${sorted.map((p,i)=>`<tr class="${i===0?'leader':''}"><td>${esc(p.name)}<div class="marks">${p.history.map((item,j)=>s.games[j].status==='revealed'?`<span class="${item==='correct'?'good':item==='wrong'?'bad':''}" title="Match ${j+1}: ${esc(item)}">${icons[item]||'–'}</span>`:'').join('')}</div></td><td>${p.score}</td></tr>`).join('')}</tbody></table>`;$('roster').innerHTML=s.players.map(p=>`<span class="${p.voted?'yes':''}">${esc(p.name)} ${p.voted?'✓':'·'}</span>`).join('')}function bracket(){const rounds=['Opening 8','Quarterfinals','Final Four','Championship'];$('bracket').innerHTML=rounds.map((name,r)=>`<div class="round"><h3>${name}</h3>${s.games.filter(g=>g.round===r).map(g=>`<div class="mini ${g.status==='revealed'?'done':g.status==='open'?'live':''}">${g.a&&g.b?`${esc(profiles[g.a].name)} vs ${esc(profiles[g.b].name)}`:'Awaiting results'}<small>${g.status==='revealed'?(g.official?'Actual: ':'Family: ')+esc(profiles[g.winner].name):g.status==='hidden'?'Not unlocked':g.status==='open'?'Voting now':g.status==='locked'?'Reveal coming':'Upcoming'}</small></div>`).join('')}</div>`).join('')}function render(){if(!s)return;$('lobby').hidden=s.started;$('game').hidden=!s.started;$('clock').textContent=clock();if(!s.started){$('lobby').innerHTML=`<div class="status">Waiting for the family</div><h2>${s.joined} / ${s.expected}</h2><p>Scan the join code on each player’s phone. First match opens automatically when all have joined.</p><div id="readiness" class="small" role="status"></div><div class="people">${s.players.map(p=>`<span>${esc(p.name)}</span>`).join('')}</div>`;readiness();return}const g=s.games[s.cursor],key=s.cursor+':'+g.a+':'+g.b;if(key!==matchKey||!$('current').querySelector('.pair')){$('current').innerHTML=`<div class="status">${['Opening round','Quarterfinal','Final Four prediction','Championship prediction'][g.round]} · match ${g.id+1}/15</div><h2>${esc(profiles[g.a].name)} vs ${esc(profiles[g.b].name)}</h2><div class="pair">${card(g.a)}${card(g.b)}</div><div id="outcome"></div>`;matchKey=key} $('outcome').innerHTML=result(g);$('current').querySelectorAll('[data-card-id]').forEach(el=>el.classList.toggle('winner',g.status==='revealed'&&g.winner===el.dataset.cardId));$('photo-count').textContent=`${s.photos_cached}/${s.photos_total} photo sources cached on this iPhone. Open View all 16 photos to inspect each.`;standings();bracket()}function rotate(){if(!s||!s.started)return;alternate=!alternate;$('current').querySelectorAll('[data-card-id]').forEach(el=>{const id=el.dataset.cardId,p=profiles[id],grid=alternate?!p.extra_label.includes('graphic'):p.extra_label.includes('graphic'),img=el.querySelector('img');if(!img)return;img.dataset.kind=grid?'grid':'extra';img.classList.toggle('grid-photo',grid);img.classList.remove('failed');img.src='/media/'+(grid?p.grid:'b'+id)+'.jpg';el.querySelector('.image-label').textContent=alternate?'Alternate image':'2026 contender'})}async function poll(){if(busy)return;busy=true;try{if(!profiles){const r=await fetch('/api/profiles');if(!r.ok)throw Error('Profiles unavailable');profiles=await r.json()}const r=await fetch('/api/state',{cache:'no-store'});if(!r.ok)throw Error('State unavailable');const next=await r.json(),stamp=JSON.stringify({games:next.games,players:next.players,cursor:next.cursor,expected:next.expected,joined:next.joined,roster:next.roster,started:next.started,deadline:next.deadline,transition_at:next.transition_at,photos_cached:next.photos_cached});serverOffset=next.now-Date.now()/1000;s=next;failures=0;if(stamp!==signature){signature=stamp;render()}else $('clock').textContent=clock()}catch(e){if(++failures>=2)$('clock').textContent='Reconnecting… Game still shown.'}finally{busy=false}}poll();setInterval(poll,1100);setInterval(rotate,9000)})();
+     3	</script></body></html>
+
+
+================================================================================
+FILE: index.html
+================================================================================
+
+     1	<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0e2032"><link rel="stylesheet" href="/style.css"><title>Fat Bear · your ballot</title></head><body><header class="top wrap"><a class="logo" href="/">FAT BEAR / FAMILY</a><a href="/display">Shared screen ↗</a></header><main class="wrap"><section class="hero"><div class="eyebrow">All 16 bears · a private family game</div><h1>Pick your <em>bear.</em></h1><p>Compare their photos and stories, then vote privately. Results appear when everyone has chosen.</p></section><div class="panel small" id="connection" role="status" aria-live="polite">Connecting…</div><section id="join" class="panel" hidden><h2>Join the game</h2><form id="join-form"><label for="name">Your name</label><input class="input" id="name" maxlength="24" required autocomplete="nickname" placeholder="Your name"><button class="btn" type="submit">Join family</button></form><p class="warning" id="join-error"></p></section><div id="game" hidden><section class="panel" id="current"></section><section class="panel"><h2>Standings</h2><div id="standings"></div><p class="small muted">Only the first 12 completed official matches award points. Future matches are predictions.</p></section></div></main><footer class="wrap footer">Your ballot here is not an official vote. <a href="https://explore.org/fat-bear-week" target="_blank" rel="noopener noreferrer">Vote and see dated before/after photos on Explore.org ↗</a></footer><dialog id="dialog" class="dialog"><button class="btn dialog-close" type="button" id="close">Close ✕</button><h2 id="dialog-title"></h2><div id="dialog-media"></div><p class="small muted">Photo date unverified; use Explore.org for dated season comparisons.</p></dialog><script>
+     2	(()=>{'use strict';const $=id=>document.getElementById(id),esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));let s=null,profiles=null,signature='',matchKey='',tab={},detail={},polling=false,failures=0,voteSaving=false,voteMessage='',serverOffset=0;document.addEventListener('error',e=>{let img=e.target;if(!(img instanceof HTMLImageElement))return;if(img.dataset.kind==='extra'){img.dataset.kind='grid';img.classList.add('grid-photo');img.style.setProperty('--origin',img.dataset.pos);img.src='/media/'+img.dataset.grid+'.jpg';return}img.classList.add('failed')},true);function photo(id,grid,zoom){let p=s.profiles[id],kind=grid?'grid':'extra',src=grid?p.grid:'b'+id;return `<div class="photo"><img src="/media/${src}.jpg" data-kind="${kind}" data-grid="${p.grid}" data-pos="${p.position}" class="${grid?'grid-photo':''}" style="--origin:${p.position}" loading="lazy" alt="${esc(p.name)} photo"><span class="fallback">#${esc(id)}</span>${zoom?'':`<button class="zoom" data-zoom="${id}" data-grid="${grid?'1':'0'}" aria-label="Enlarge ${esc(p.name)} photo">Expand ⤢</button>`}</div>`}function card(id,g){let p=s.profiles[id],key=g.id+'-'+id,grid=tab[key]===true||(!Object.prototype.hasOwnProperty.call(tab,key)&&p.extra_label.includes('graphic'));return `<article data-card-id="${id}" class="bear ${g.my_pick===id?'selected':''} ${g.status==='revealed'&&g.winner===id?'winner':''}">${photo(id,grid,false)}<div class="bear-body"><div class="status">#${id} · ${esc(p.type)}</div><h3>${esc(p.name)}</h3><div class="tabs"><button data-key="${key}" data-tab="extra" class="${grid?'':'on'}">${esc(p.extra_label)}</button><button data-key="${key}" data-tab="grid" class="${grid?'on':''}">Bracket photo</button></div><p>${esc(p.lead)}</p><button class="btn secondary" type="button" data-story="${key}" aria-expanded="${!!detail[key]}">${detail[key]?'Hide story ↑':'Read full story ↓'}</button><p class="small" ${detail[key]?'':'hidden'}>${esc(p.story)}</p><div class="links"><a href="${p.official_info}" target="_blank" rel="noopener noreferrer">Official bio ↗</a><a href="${p.source}" target="_blank" rel="noopener noreferrer">Photo source ↗</a><a href="https://explore.org/fat-bear-week" target="_blank" rel="noopener noreferrer">Before/after ↗</a></div>${g.status==='open'?`<button type="button" data-vote="${id}" class="btn" style="width:100%">${g.my_pick===id?'Your pick ✓':'Pick '+esc(p.name)}</button>`:''}</div></article>`}function outcome(g){if(g.status==='revealed')return g.official?`<div class="result"><strong>Official winner: ${esc(s.profiles[g.winner].name)}</strong><small>Official votes: ${g.totals[0].toLocaleString()} vs ${g.totals[1].toLocaleString()} · family: ${g.family_votes[g.a]} vs ${g.family_votes[g.b]}</small></div>`:`<div class="result pred"><strong>Family prediction: ${esc(s.profiles[g.winner].name)}</strong><small>${g.coin_toss?'Tied family vote decided by coin toss.':'Family majority advances.'} No official result yet.</small></div>`;return g.status==='locked'?'<div class="result pred">Voting closed. Reveal coming…</div>':''}function clock(g){let t=s.deadline||s.transition_at,sec=t?Math.max(0,Math.ceil(t-(Date.now()/1000+serverOffset))):0;return g.status==='open'?`${g.voted}/${s.roster} voted · ${sec}s left`:g.status==='locked'?`Reveal in ${sec}s`:g.status==='revealed'?g.id===14?'Game complete':`Next match in ${sec}s`:'Waiting'}function render(){if(!s)return;$('join').hidden=!!s.me||s.started;$('game').hidden=!s.me;if(!s.me)return;if(!s.started){$('current').innerHTML=`<div class="status">Lobby</div><h2>Waiting for everyone</h2><p>${s.joined}/${s.expected} joined. The game begins as soon as the room fills.</p>`;return}let g=s.games[s.cursor];$('current').innerHTML=`<div class="status">${['Opening round','Quarterfinal','Final Four prediction','Final prediction'][g.round]} · match ${g.id+1}/15 · <span id="timer">${clock(g)}</span></div><h2>${esc(s.profiles[g.a].name)} vs ${esc(s.profiles[g.b].name)}</h2><div class="pair">${card(g.a,g)}${card(g.b,g)}</div>${outcome(g)}<p class="small warning" id="vote-feedback" role="status" aria-live="polite">${esc(voteMessage)}</p><div class="people">${s.players.map(p=>`<span class="${p.voted?'yes':''}">${esc(p.name)} ${p.voted?'✓':'·'}</span>`).join('')}</div>`;$('current').querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{tab[b.dataset.key]=b.dataset.tab==='grid';updateCardPhoto(b.dataset.key)}));$('current').querySelectorAll('[data-story]').forEach(b=>b.addEventListener('click',()=>{detail[b.dataset.story]=!detail[b.dataset.story];b.setAttribute('aria-expanded',String(detail[b.dataset.story]));b.nextElementSibling.hidden=!detail[b.dataset.story];b.textContent=detail[b.dataset.story]?'Hide story ↑':'Read full story ↓'}));$('current').querySelectorAll('[data-vote]').forEach(b=>b.addEventListener('click',async()=>{await castVote(b.dataset.vote)}));$('current').querySelectorAll('[data-zoom]').forEach(b=>b.addEventListener('click',()=>{let id=b.dataset.zoom,grid=b.dataset.grid==='1';$('dialog-title').textContent=s.profiles[id].name+' · '+(grid?'bracket photo':s.profiles[id].extra_label);$('dialog-media').innerHTML=photo(id,grid,true);$('dialog').showModal()}));let ranked=[...s.players].sort((a,b)=>b.score-a.score||a.name.localeCompare(b.name));$('standings').innerHTML=`<table class="score"><thead><tr><th>Family member</th><th>Points</th></tr></thead><tbody>${ranked.map(p=>`<tr><td class="${p.name===s.me?'leader':''}">${esc(p.name)}${p.name===s.me?' (you)':''}</td><td>${p.score}</td></tr>`).join('')}</tbody></table>`}function updateCardPhoto(key){let [match,id]=key.split('-'),g=s.games[s.cursor],p=s.profiles[id],grid=tab[key]===true||(!Object.prototype.hasOwnProperty.call(tab,key)&&p.extra_label.includes('graphic')),card=$('current').querySelector(`[data-card-id="${id}"]`);if(!card||match!=g.id)return;let img=card.querySelector('.photo img');img.dataset.kind=grid?'grid':'extra';img.classList.toggle('grid-photo',grid);img.classList.remove('failed');img.src='/media/'+(grid?p.grid:'b'+id)+'.jpg';card.querySelector('[data-zoom]').dataset.grid=grid?'1':'0';card.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('on',(b.dataset.tab==='grid')===grid))}function setVoteMessage(text){voteMessage=text;let el=$('vote-feedback');if(el)el.textContent=text}async function castVote(id){if(voteSaving)return;voteSaving=true;setVoteMessage('Saving pick…');$('current').querySelectorAll('[data-vote]').forEach(b=>b.disabled=true);try{await post('/api/vote',{choice:id});setVoteMessage('Your pick saved ✓');await poll()}catch(e){setVoteMessage('Could not save your pick: '+e.message)}finally{voteSaving=false;$('current').querySelectorAll('[data-vote]').forEach(b=>b.disabled=false)}}function refresh(){let g=s.games[s.cursor],current=$('current');let timer=$('timer');if(timer)timer.textContent=clock(g);current.querySelectorAll('[data-card-id]').forEach(card=>{let id=card.dataset.cardId;card.classList.toggle('selected',g.my_pick===id);card.classList.toggle('winner',g.status==='revealed'&&g.winner===id);let vote=card.querySelector('[data-vote]');if(g.status==='open'){if(!vote){vote=document.createElement('button');vote.type='button';vote.className='btn';vote.style.width='100%';vote.dataset.vote=id;card.querySelector('.bear-body').append(vote);vote.addEventListener('click',()=>castVote(id))}vote.textContent=g.my_pick===id?'Your pick ✓':'Pick '+s.profiles[id].name;vote.disabled=voteSaving}else if(vote)vote.remove()});current.querySelector('.people').innerHTML=s.players.map(p=>`<span class="${p.voted?'yes':''}">${esc(p.name)} ${p.voted?'✓':'·'}</span>`).join('');let result=current.querySelector('.result'),html=outcome(g);if(result)result.remove();if(html)current.querySelector('.pair').insertAdjacentHTML('afterend',html);let ranked=[...s.players].sort((a,b)=>b.score-a.score||a.name.localeCompare(b.name));$('standings').innerHTML=`<table class="score"><thead><tr><th>Family member</th><th>Points</th></tr></thead><tbody>${ranked.map(p=>`<tr><td class="${p.name===s.me?'leader':''}">${esc(p.name)}${p.name===s.me?' (you)':''}</td><td>${p.score}</td></tr>`).join('')}</tbody></table>`}async function post(path,data){let r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(data)});let body=await r.json();if(!r.ok)throw Error(body.error||'Request failed');return body}async function poll(){if(polling||document.hidden)return;polling=true;try{if(!profiles){let p=await fetch('/api/profiles');if(!p.ok)throw Error('Profiles unavailable');profiles=await p.json()}let r=await fetch('/api/state',{cache:'no-store',credentials:'same-origin'});if(!r.ok)throw Error('State unavailable');let latest=await r.json(),sig=JSON.stringify({me:latest.me,games:latest.games,players:latest.players,cursor:latest.cursor,expected:latest.expected,joined:latest.joined,roster:latest.roster,started:latest.started,deadline:latest.deadline,transition_at:latest.transition_at});let previousMatch=matchKey;serverOffset=latest.now-Date.now()/1000;latest.profiles=profiles;s=latest;matchKey=s.started?s.cursor+':'+s.games[s.cursor].a+':'+s.games[s.cursor].b:'';failures=0;$('connection').textContent='Connected · '+s.joined+'/'+s.expected+' family players';if(sig!==signature){signature=sig;if(previousMatch!==matchKey||!s.started||!$('current').querySelector('.pair')){if(previousMatch!==matchKey)voteMessage='';render()}else refresh()}else if(s.started&&$('timer'))$('timer').textContent=clock(s.games[s.cursor])}catch(e){failures++;if(failures>=2)$('connection').textContent='Reconnecting… Your current game is still shown.'}finally{polling=false}}document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});$('join-form').addEventListener('submit',async e=>{e.preventDefault();try{await post('/api/join',{name:$('name').value});$('join-error').textContent='';await poll()}catch(err){$('join-error').textContent=err.message}});$('close').addEventListener('click',()=>$('dialog').close());$('dialog').addEventListener('click',e=>{if(e.target===$('dialog'))$('dialog').close()});poll();setInterval(()=>{if(!document.hidden)poll()},1000)})();
+     3	</script></body></html>
+
+
+================================================================================
+FILE: photos.html
+================================================================================
+
+     1	<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0e2032"><link rel="stylesheet" href="/style.css"><title>Fat Bear · all sixteen photos</title><style>.gallery{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:11px}.tile{background:var(--panel);border:1px solid var(--edge);border-radius:13px;overflow:hidden}.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px}.two .photo{aspect-ratio:1}.two button{position:absolute;inset:0;border:0;background:transparent;color:transparent}.two button:focus-visible{color:white;background:#0006}.two .caption{position:absolute;left:4px;bottom:4px;font-size:.63rem;color:white;background:#082436d9;border-radius:5px;padding:3px 5px;pointer-events:none}.tile-body{padding:11px}.tile h2{font-size:clamp(1.1rem,1.7vw,1.5rem);letter-spacing:-.04em;margin:3px 0 8px}.tile p{font-size:.78rem;color:var(--muted);margin:0 0 9px}.tile .links a{font-size:.68rem}.dialog .photo button{display:none}.dialog .photo .caption{position:absolute;left:6px;bottom:6px;color:white;background:#092536;padding:4px 7px}.note{border:1px solid var(--edge);padding:10px 13px;border-radius:11px;background:var(--panel);color:var(--muted);margin:12px 0 23px}@media(max-width:1120px){.gallery{grid-template-columns:repeat(3,1fr)}}@media(max-width:740px){.gallery{grid-template-columns:repeat(2,1fr)}}@media(max-width:450px){.gallery{gap:7px}.tile-body{padding:8px}.tile h2{font-size:1.05rem}.tile p{font-size:.69rem}}</style></head><body><header class="top wrap"><span class="logo">FAT BEAR / ALL PHOTOS</span><a class="btn" href="/display">← Shared game</a></header><main class="wrap"><section class="hero"><div class="eyebrow">Photo check · all 16 contenders</div><h1>See every <em>bear.</em></h1><p>Each bear has its additional photograph or profile graphic alongside the 2026 bracket image. Tap either to enlarge. Photos have not been verified as a before-and-after pair.</p></section><div class="note" id="status">Loading photo manifest…</div><div id="gallery" class="gallery"></div></main><dialog class="dialog" id="dialog"><button class="btn dialog-close" id="close">Close ✕</button><h2 id="dialog-title"></h2><div id="large"></div><p class="small muted">Image date unverified. Use Explore.org for labelled July/September comparisons.</p></dialog><script>
+     2	(()=>{'use strict';const $=id=>document.getElementById(id),esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','&lt;','>':'&gt;',"'":'&#39;'}[c]));let s=null;document.addEventListener('error',e=>{if(e.target instanceof HTMLImageElement)e.target.classList.add('failed')},true);function pic(id,grid,large){let b=s.profiles[id],label=grid?'Bracket photo':b.extra_label;return `<div class="photo"><img src="/media/${grid?b.grid:'b'+id}.jpg" loading="${large?'eager':'lazy'}" class="${grid?'grid-photo':''}" style="--origin:${b.position}" alt="${esc(b.name)} ${esc(label)}"><span class="fallback">#${esc(id)}</span>${large?'':`<button type="button" data-id="${id}" data-grid="${grid?'1':'0'}" aria-label="Enlarge ${esc(label)} of ${esc(b.name)}">Enlarge</button>`}<span class="caption">${esc(label)}</span></div>`}function open(id,grid){let b=s.profiles[id];$('dialog-title').textContent=b.name+' · '+(grid?'bracket photo':b.extra_label);$('large').innerHTML=pic(id,grid,true);$('dialog').showModal()}function render(){let order=['132','284','806','901','909','428','131','910','694','620','610','89','32','164','151','903'];$('status').textContent=`${s.photos_cached}/${s.photos_total} photo files cached on this iPhone. Scroll to check all 16; missing downloads show a numbered tile.`;$('gallery').innerHTML=order.map(id=>{let b=s.profiles[id];return `<article class="tile"><div class="two">${pic(id,false,false)}${pic(id,true,false)}</div><div class="tile-body"><div class="status">#${id} · ${esc(b.type)}</div><h2>${esc(b.name)}</h2><p>${esc(b.story)}</p><div class="links"><a href="${b.official_info}" target="_blank" rel="noopener noreferrer">Official bio ↗</a><a href="${b.source}" target="_blank" rel="noopener noreferrer">Photo source ↗</a><a href="https://explore.org/fat-bear-week" target="_blank" rel="noopener noreferrer">Dated comparison ↗</a></div></div></article>`}).join('');$('gallery').querySelectorAll('[data-id]').forEach(b=>b.addEventListener('click',()=>open(b.dataset.id,b.dataset.grid==='1')))}$('close').addEventListener('click',()=>$('dialog').close());$('dialog').addEventListener('click',e=>{if(e.target===$('dialog'))$('dialog').close()});Promise.all([fetch('/api/profiles').then(r=>{if(!r.ok)throw Error();return r.json()}),fetch('/api/state',{cache:'no-store'}).then(r=>{if(!r.ok)throw Error();return r.json()})]).then(([profiles,state])=>{s={...state,profiles};render()}).catch(()=>$('status').textContent='Cannot reach the iPhone server.');})();
+     3	</script></body></html>
+
+
+================================================================================
+FILE: style.css
+================================================================================
+
+     1	:root{--bg:#0e2032;--panel:#173348;--edge:#315368;--text:#f2f1df;--muted:#b8c8c8;--lime:#d8ff6c;--gold:#ffd596;--red:#ff8d8a;--green:#b0efb0}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}button,input{font:inherit}button{cursor:pointer}a{color:var(--lime)}[hidden]{display:none!important}.wrap{width:min(1440px,calc(100% - 30px));margin:auto}.top{display:flex;justify-content:space-between;align-items:center;padding:16px 0;gap:12px}.logo{font-size:.85rem;font-weight:1000;letter-spacing:.11em;color:var(--lime);text-decoration:none}.top>a:not(.logo){font-size:.8rem}.hero{padding:18px 0 25px}.eyebrow,.status{text-transform:uppercase;letter-spacing:.15em;font-size:.7rem;font-weight:900;color:var(--lime)}.hero h1{font-size:clamp(3.4rem,11vw,8rem);letter-spacing:-.09em;line-height:.85;margin:16px 0}.hero h1 em{font-style:normal;color:var(--lime)}.hero p{font-size:clamp(1rem,2vw,1.3rem);color:var(--muted);max-width:750px}.panel{background:var(--panel);border:1px solid var(--edge);border-radius:18px;padding:clamp(16px,2vw,27px);margin-bottom:15px}.panel h2{font-size:clamp(1.8rem,3.5vw,3.2rem);line-height:1.05;letter-spacing:-.06em;margin:10px 0 18px}.panel h3{font-size:clamp(1.4rem,2vw,2rem);line-height:1.1;letter-spacing:-.045em;margin:8px 0}.small{font-size:.82rem}.muted{color:var(--muted)}.warning{color:var(--gold)}.input{display:block;background:#102d41;color:white;border:1px solid var(--muted);border-radius:9px;padding:13px;width:100%;max-width:350px;margin:10px 0}.btn{border:0;border-radius:9px;padding:11px 15px;background:var(--lime);color:#10232a;font-weight:900;display:inline-block;text-decoration:none}.btn:disabled{opacity:.5;cursor:wait}.btn.secondary{background:#255069;color:var(--text)}.pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.bear{background:#102b3e;border:2px solid transparent;border-radius:13px;overflow:hidden}.bear.selected{border-color:var(--lime)}.bear.winner{border-color:var(--gold)}.photo{position:relative;background:#092335;aspect-ratio:1.45;overflow:hidden}.photo img{display:block;width:100%;height:100%;object-fit:cover}.photo img.grid-photo{width:200%;height:200%;max-width:none;object-fit:fill;object-position:center;transform-origin:var(--origin,0% 0%);transform:translate(calc(-1 * (var(--origin-x,0) * 50%)),calc(-1 * (var(--origin-y,0) * 50%)))}.grid-photo[style*="100% 0%"]{transform:translateX(-50%)}.grid-photo[style*="0% 100%"]{transform:translateY(-50%)}.grid-photo[style*="100% 100%"]{transform:translate(-50%,-50%)}.photo img.failed{display:none}.fallback{position:absolute;inset:0;display:grid;place-items:center;color:#fff8;font-weight:900;font-size:2rem;pointer-events:none}.photo img:not(.failed)+.fallback{display:none}.zoom{position:absolute;right:8px;bottom:8px;border:1px solid #fff8;border-radius:8px;background:#0e2032de;color:white;font-size:.7rem;padding:7px 9px}.bear-body{padding:clamp(10px,2vw,20px)}.bear-body p{color:var(--muted);font-size:.88rem}.tabs{display:flex;gap:5px;margin:13px 0}.tabs button{font-size:.72rem;border:1px solid var(--edge);border-radius:7px;padding:7px;background:transparent;color:var(--text)}.tabs .on{background:var(--lime);color:#10232a}.links{display:flex;gap:9px;flex-wrap:wrap;margin:13px 0}.links a{font-size:.76rem}.result{padding:12px 14px;border-radius:9px;background:#344d3c;margin:13px 0}.result strong{display:block}.result small{display:block;color:var(--muted);margin-top:4px}.result.pred{background:#3e3649}.people{display:flex;gap:8px;flex-wrap:wrap}.people span{background:#294155;border-radius:7px;padding:5px 8px;font-size:.75rem}.people .yes{background:#416539}.score{border-collapse:collapse;width:100%;margin:13px 0}.score th,.score td{padding:8px;border-bottom:1px solid var(--edge);text-align:left}.score th:last-child,.score td:last-child{text-align:right}.score .leader{color:var(--lime)}.bracket{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:11px}.round{min-width:0}.round h3{font-size:.87rem;color:var(--lime);text-transform:uppercase;letter-spacing:.05em}.mini{padding:8px;margin:5px 0;background:#102b3e;border:1px solid var(--edge);border-radius:8px;font-size:.77rem}.mini small{display:block;color:var(--muted)}.mini.live{border-color:var(--lime)}.mini.done{border-color:var(--gold)}.marks{display:flex;gap:4px;flex-wrap:wrap;margin-top:5px;font-size:.7rem;color:var(--muted)}.marks .good{color:var(--green)}.marks .bad{color:var(--red)}.footer{padding:20px 0 40px;font-size:.75rem;color:var(--muted)}.dialog{background:var(--panel);color:var(--text);border:1px solid var(--edge);border-radius:12px;width:min(95vw,750px);max-height:90vh;padding:20px}.dialog::backdrop{background:#061823d9}.dialog .photo{aspect-ratio:1.5}.dialog-close{float:right}@media(max-width:650px){.pair{grid-template-columns:1fr}.bracket{grid-template-columns:repeat(2,minmax(0,1fr))}.hero{padding-top:5px}.hero h1{font-size:clamp(3rem,14vw,5rem)}}
+     2	/* P1: iPad stage. Keep the join tools in the lobby; give the live matchup the room. */
+     3	body:has(#bracket) .wrap{width:min(1500px,calc(100% - 28px))}body:has(#bracket) .layout{grid-template-columns:minmax(0,2.4fr) minmax(225px,.8fr);align-items:start;gap:12px}body:has(#bracket) #current .pair{gap:10px}body:has(#bracket) #current .photo{aspect-ratio:1.3}body:has(#bracket) #current .bear-body{padding:12px 14px}body:has(#bracket) #current .bear-body h3{font-size:clamp(1.25rem,2.5vw,2.3rem)}body:has(#bracket) #current .bear-body p{margin:6px 0;line-height:1.32}body:has(#bracket) #clock{font-size:clamp(1rem,2.1vw,1.55rem);letter-spacing:.02em;text-align:right;color:var(--gold)}body:has(#bracket) #current>.status{font-size:.85rem}body:has(#bracket) #current>h2{font-size:clamp(1.5rem,3vw,2.6rem);margin:8px 0 14px}body:has(#bracket) #current .result{font-size:clamp(1rem,1.7vw,1.3rem)}body:has(#bracket) .score th,body:has(#bracket) .score td{font-size:clamp(.85rem,1.2vw,1.05rem)}body:has(#bracket) .people span{font-size:.86rem}body:has(#game:not([hidden])):has(#bracket) .share{display:none}body:has(#game:not([hidden])):has(#bracket) .header{padding:8px 0}body:has(#game:not([hidden])):has(#bracket) .intro h1{font-size:clamp(1.3rem,2.7vw,2.3rem);margin:6px 0 10px;letter-spacing:-.05em}body:has(#game:not([hidden])):has(#bracket) .intro{align-items:center}body:has(#game:not([hidden])):has(#bracket) #current{margin-bottom:12px}body:has(#game:not([hidden])):has(#bracket) #bracket{margin-top:4px}@media(max-width:940px){body:has(#bracket) .layout{grid-template-columns:1fr}body:has(#bracket) .header{display:grid;grid-template-columns:minmax(0,1fr) auto}body:has(#bracket) .header .share{grid-column:1/-1;justify-self:center}body:has(#bracket) #current .photo{aspect-ratio:1.48}body:has(#bracket) .layout aside{display:grid;grid-template-columns:1fr 1fr;column-gap:18px}body:has(#bracket) .layout aside>.status,body:has(#bracket) .layout aside>h2:first-of-type,body:has(#bracket) .layout aside>#scores{grid-column:1}body:has(#bracket) .layout aside>h2:nth-of-type(2),body:has(#bracket) .layout aside>#roster{grid-column:2}body:has(#bracket) .layout aside>h2:nth-of-type(2){grid-row:1/3;align-self:end}body:has(#bracket) .layout aside>#roster{grid-row:3}body:has(#bracket) .layout aside h2{font-size:1.35rem}}
+     4	/* P1: the phone is a ballot first, a profile reader second. */
+     5	@media(max-width:650px){body:has(#join) .top{padding:8px 0}body:has(#join) .hero{padding:4px 0 8px}body:has(#join) .hero h1{font-size:clamp(2.2rem,10vw,3.4rem);margin:8px 0}body:has(#join) .hero p{display:none}body:has(#join) #connection{padding:7px 11px;margin-bottom:8px;font-size:.75rem}body:has(#join) #current{padding:12px;margin-bottom:10px}body:has(#join) #current>.status{font-size:.68rem;letter-spacing:.06em}body:has(#join) #current>h2{font-size:1.2rem;margin:5px 0 9px}body:has(#join) #current .pair{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}body:has(#join) #current .bear{min-width:0}body:has(#join) #current .photo{aspect-ratio:1.28}body:has(#join) #current .bear-body{display:flex;flex-direction:column;padding:9px 8px;gap:6px}body:has(#join) #current .bear-body .status{display:none}body:has(#join) #current .bear-body h3{order:-2;font-size:clamp(.98rem,4.3vw,1.4rem);line-height:1.1;min-height:2.2em;margin:0;overflow-wrap:anywhere}body:has(#join) #current .bear-body [data-vote]{order:-1;min-height:52px;width:100%;padding:8px 5px;font-size:.82rem;line-height:1.15;white-space:normal}body:has(#join) #current .bear-body .tabs{order:1;margin:4px 0 0;flex-wrap:wrap}body:has(#join) #current .bear-body .tabs button{min-height:36px;padding:5px;font-size:.7rem}body:has(#join) #current .bear-body>p{order:2;margin:0;font-size:.78rem}body:has(#join) #current .bear-body [data-story]{order:3;min-height:40px;padding:6px;font-size:.75rem}body:has(#join) #current .bear-body .links{order:4;margin:3px 0;gap:8px}body:has(#join) #current .bear-body .links a{font-size:.72rem}body:has(#join) #current .zoom{font-size:.7rem;min-height:35px;min-width:42px}body:has(#join) #current>.people{margin-top:10px}body:has(#join) #current .result{margin:9px 0}body:has(#join) .footer{padding:12px 0 30px}}@media(max-width:370px){body:has(#join) #current .pair{gap:5px}body:has(#join) #current .bear-body{padding:7px 5px}body:has(#join) #current .bear-body [data-vote]{font-size:.74rem}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+
+
+================================================================================
+FILE: cache_photos.py
+================================================================================
+
+     1	#!/usr/bin/env python3
+     2	from pathlib import Path
+     3	import urllib.request
+     4	from data import GRID,EXTRA
+     5	media=Path(__file__).resolve().parent/'media';media.mkdir(exist_ok=True)
+     6	sources={**GRID,**{'b'+id:url for id,(url,_,_) in EXTRA.items()}}
+     7	loaded=0
+     8	for key,url in sources.items():
+     9	    path=media/(key+'.jpg')
+    10	    if path.exists() and path.stat().st_size>=1000:
+    11	        loaded+=1;print(key,'cached');continue
+    12	    try:
+    13	        req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0 FatBearFamily/4.0'})
+    14	        with urllib.request.urlopen(req,timeout=12) as r:
+    15	            if not r.headers.get('Content-Type','').lower().startswith('image/'):raise ValueError('response is not image')
+    16	            content=r.read(9000001)
+    17	        if not 1000<len(content)<9000000:raise ValueError('image size invalid')
+    18	        path.write_bytes(content);loaded+=1;print(key,'downloaded',len(content),'bytes')
+    19	    except Exception as e:print(key,'MISSING:',str(e)[:150])
+    20	print('Cached',loaded,'/',len(sources),'source photos.')
+
+
+================================================================================
+FILE: tests/test_p0.py
+================================================================================
+
+     1	import http.cookiejar
+     2	import os
+     3	from pathlib import Path
+     4	import shutil
+     5	import socket
+     6	import subprocess
+     7	import tempfile
+     8	import time
+     9	import unittest
+    10	import urllib.request
+    11	
+    12	ROOT = Path(__file__).resolve().parents[1]
+    13	
+    14	class P0Smoke(unittest.TestCase):
+    15	    def test_inline_scripts_parse(self):
+    16	        node = shutil.which('node')
+    17	        if not node:
+    18	            self.skipTest('Install Node.js to check browser script syntax')
+    19	        for name in ('display.html', 'index.html', 'photos.html'):
+    20	            html = (ROOT / name).read_text()
+    21	            scripts = html.split('<script>')[1:]
+    22	            self.assertTrue(scripts, name)
+    23	            for script in scripts:
+    24	                source = script.split('</script>', 1)[0]
+    25	                result = subprocess.run([node, '--check', '--input-type=commonjs'], input=source, text=True, capture_output=True)
+    26	                self.assertEqual(result.returncode, 0, f'{name}: {result.stderr}')
+    27	
+    28	    def test_lobby_vote_reveal_and_advance(self):
+    29	        with tempfile.TemporaryDirectory() as tmp:
+    30	            for name in ('server.py', 'data.py', 'display.html', 'index.html', 'photos.html', 'style.css'):
+    31	                shutil.copy2(ROOT / name, Path(tmp) / name)
+    32	            with socket.socket() as sock:
+    33	                sock.bind(('127.0.0.1', 0))
+    34	                port = sock.getsockname()[1]
+    35	            env = dict(os.environ, PORT=str(port), VOTE_SECONDS='15', REVEAL_SECONDS='1')
+    36	            proc = subprocess.Popen(['python3', 'server.py', '2'], cwd=tmp, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    37	            url = f'http://127.0.0.1:{port}'
+    38	            a = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    39	            b = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    40	            def get(client, path):
+    41	                import json
+    42	                return json.load(client.open(url + path, timeout=2))
+    43	            def post(client, path, payload):
+    44	                import json
+    45	                request = urllib.request.Request(url + path, json.dumps(payload).encode(), {'Content-Type': 'application/json'})
+    46	                return json.load(client.open(request, timeout=2))
+    47	            try:
+    48	                for _ in range(50):
+    49	                    try:
+    50	                        self.assertIn(b'FAT BEAR', a.open(url + '/display', timeout=1).read())
+    51	                        break
+    52	                    except (OSError, AssertionError):
+    53	                        time.sleep(.1)
+    54	                else:
+    55	                    self.fail('Server did not start')
+    56	                self.assertFalse(get(a, '/api/state')['started'])
+    57	                post(a, '/api/join', {'name': 'Alice'})
+    58	                post(b, '/api/join', {'name': 'Bob'})
+    59	                state = get(a, '/api/state')
+    60	                self.assertTrue(state['started'])
+    61	                self.assertEqual(state['games'][0]['status'], 'open')
+    62	                self.assertEqual(state['me'], 'Alice')
+    63	                post(a, '/api/vote', {'choice': '132'})
+    64	                post(b, '/api/vote', {'choice': '284'})
+    65	                self.assertEqual(get(a, '/api/state')['games'][0]['status'], 'locked')
+    66	                deadline = time.monotonic() + 7
+    67	                while time.monotonic() < deadline:
+    68	                    state = get(a, '/api/state')
+    69	                    if state['cursor'] == 1:
+    70	                        break
+    71	                    time.sleep(.1)
+    72	                self.assertEqual(state['cursor'], 1)
+    73	                self.assertEqual(state['games'][0]['status'], 'revealed')
+    74	                self.assertEqual(state['games'][0]['winner'], '132')
+    75	                self.assertEqual(state['games'][1]['status'], 'open')
+    76	            finally:
+    77	                proc.terminate()
+    78	                try:
+    79	                    proc.wait(timeout=3)
+    80	                except subprocess.TimeoutExpired:
+    81	                    proc.kill()
+    82	                    proc.wait()
+    83	
+    84	if __name__ == '__main__':
+    85	    unittest.main()
+
+
+================================================================================
+FILE: README.md
+================================================================================
+
+     1	# Fat Bear Family — complete performance and UX build
+     2	
+     3	This is a complete build, not an upgrade or a patch. It extracts to `/home/bear-game/` and does not alter the old `/home/fatbear-family/`. Its dynamic join QR uses **Segno**, a pure-Python QR generator; it does not need the unavailable `libqrencode-tools` package. Python 3.9+ is required. All app code uses Python's standard library apart from Segno for QR.
+     4	
+     5	## iPhone installation
+     6	
+     7	1. Stop the old server with Ctrl-C. Leave its folder untouched.
+     8	2. Save the supplied archive to the iSH Files location, e.g. `/home`. iOS may append `.tar` to the archive name. Run `ls -1 /home` and use the **exact visible filename** in this command:
+     9	
+    10	   ```sh
+    11	   cd /home
+    12	   tar -xzf bear-game.tar.gz
+    13	   cd bear-game
+    14	   sh setup.sh
+    15	   python3 cache_photos.py
+    16	   python3 server.py 4
+    17	   ```
+    18	
+    19	   If Files named it `bear-game.tar.gz.tar`, use that after `tar -xzf` instead. Replace `4` with the actual number of players (2–30). If you already installed Python in iSH, no reinstall is needed. If `sh setup.sh` cannot find pip, it attempts `apk add py3-pip` and then installs Segno from PyPI. The setup script checks the import before reporting success. Internet is required for this first setup and photo prefetch.
+    20	3. Keep iSH in the foreground and the phone awake, ideally charging. Find the iPhone IP in Settings → Wi-Fi → ⓘ. Open `http://<IPHONE-IP>:8765/display` on the communal browser and `http://<IPHONE-IP>:8765/` on player phones. The communal screen has the join QR. If you use `localhost` to open it, the QR intentionally warns rather than encoding a link no other device can open.
+    21	4. Type the correct Wi-Fi name into the communal screen once; it is saved in that browser, not guessed from iOS. The QR encodes **only** the game URL, not Wi-Fi credentials. If a QR is absent, visit `http://<IPHONE-IP>:8765/join-qr.svg` to see the exact server error. If it says Segno is missing, rerun `sh setup.sh`.
+    22	5. Select **View all 16 photos** on the communal screen to inspect a side-by-side overview of every contender’s bracket image and alternate source. It shows how many of the 20 photo assets cached successfully. Tap an image for a larger view.
+    23	
+    24	## Game behaviour
+    25	
+    26	The game begins when the configured number of named players join; this freezes the roster. Players can change picks until all have voted or the default 180-second timeout ends. Then a 3-second suspense lock, automatic reveal, 12-second results display and automatic next match. The communal screen shows both bears, player submission count, scoreboard, ✓/✕ history and spoiler-safe bracket. The first 12 known results give one point per correct pick. The three future matches are unscored family predictions; a tie is labelled a coin toss, never an official result. `VOTE_SECONDS=240 python3 server.py 4` extends the time limit if needed.
+    27	
+    28	## Photo honesty and cache
+    29	
+    30	The archive has stories and URLs for four 2026 bracket grids plus one alternate photo or profile graphic for each of 16 entries. It does **not** contain third-party binary photos. `cache_photos.py` downloads any reachable images into local `media/`; the player UI falls back to the bracket grid if an alternate source fails and then to a labelled placeholder if both fail. The overview shows missing thumbnails rather than silently substituting another bear. It cannot promise all 20 sources will remain online—verify the cache count before an offline event.
+    31	
+    32	Photos have no verified dates in this build and must not be called “before” or “after”. Player cards link to official Explore.org bios, source photo pages and the official tournament page for dated comparison photographs. Photo source credits and URLs are in `data.py`; private family use does not imply a licence to redistribute them.
+    33	
+    34	## State and files
+    35	
+    36	This fresh folder starts a new game and writes its own `game.json` on first launch. Keep the original folder to retain its old game. The new build will not overwrite that game or its image cache. To continue an old game later, stop the new server, back up both state files and copy the old `game.json` into this folder before restarting; leave the old folder in place.
+    37	
+    38	- `server.py`: LAN game, timer, spoiler-safe results, QR SVG and photo cache.
+    39	- `data.py`: 16 richer profiles, image attribution/source links and bracket results.
+    40	- `index.html`: player photos, stories, links and private votes.
+    41	- `display.html`: communal screen, Wi-Fi-name label, QR, current bears and scoreboard.
+    42	- `photos.html`: all-16 photo overview and enlargements.
+    43	- `cache_photos.py`: prefetch of 20 photo sources.
+    44	- `setup.sh`: installs/checks the Segno QR dependency.
+    45	
+    46	This is a trusted-LAN HTTP app, not a public-internet deployment. All browsers must be on a mutually reachable Wi-Fi network; guest/client isolation can block the connection.
+    47	
+    48	## Performance and experience update
+    49	
+    50	The 16 static bear profiles load once per browser session from `/api/profiles`. `/api/state` carries only live game data and remains uncached. Player tabs stop polling while hidden and fetch immediately on return; the communal display keeps updating. Vote counts, phase changes and score updates no longer replace the current photo cards. The shared display switches its two images every nine seconds without replacing surrounding cards. Media responses allow browser caching for one day.
+    51	
+    52	The current game stays visible through brief connection problems; after two missed polls the UI shows a reconnecting message. Vote submissions disable buttons while saving and show success/failure inline. The shared-screen lobby shows whether the join QR loaded and how many photo files are cached. Check the QR with a second phone and use the all-photos view to inspect missing images.
+
+
+================================================================================
+FILE: setup.sh
+================================================================================
+
+     1	#!/bin/sh
+     2	set -eu
+     3	if ! command -v python3 >/dev/null 2>&1; then echo 'Python 3 required: apk add python3'; exit 1; fi
+     4	if ! python3 -c 'import segno' >/dev/null 2>&1; then
+     5	  if ! python3 -m pip --version >/dev/null 2>&1; then apk add py3-pip; fi
+     6	  python3 -m pip install --break-system-packages segno || python3 -m pip install segno
+     7	fi
+     8	python3 -c 'import segno; print("QR dependency ready")'
